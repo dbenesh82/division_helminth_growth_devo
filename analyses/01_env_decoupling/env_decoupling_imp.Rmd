@@ -1,0 +1,2087 @@
+---
+title: "Environmental coupling of parasite stages"
+output: 
+  github_document:
+    toc: true
+    df_print: kable
+---
+
+Should we expect parasite larval and adult phenotypes to be correlated? One reason for them to be correlated is if the kinds of hosts infected at consecutive life stages are correlated. For example, if big intermediate hosts are transmitted to big definitive hosts. In this notebook, we explore whether there is this kind of "environmental" coupling among parasite stages.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(MCMCglmm)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+options(stringsAsFactors = FALSE)
+theme_set(new = theme_bw())
+```
+```{r}
+tree <- read.tree(file = "../../data/full_tree_time_calib.nex")
+dat_no_imp <- read.csv(file = "../../data/stage_level_combined_noimputed.csv", header = T)
+dat <- read.csv(file = "../../data/imputed_stage_level_tables/stage_level_combined_bestimputed.csv", header = T)
+```
+
+```{r}
+# # id which spp had no host bm values (not many)
+# dat <- left_join(dat, 
+#                  filter(dat_no_imp, Facultative != "postcyclic", assumed_stage == "no")%>%
+#                     select(Parasite.species, Stage, host_bm_ni = host_bm, host_tl_ni = host_tl)
+#                   )
+# # table(is.na(dat$host_tl_ni))
+# rm(dat_no_imp)
+```
+
+For simplicity let's restrict ourselves to two stages: first intermediate host and second definitive host. In other words, we're only looking at worms with two-host life cycles.
+
+```{r}
+wrangle_data <- function(dat){
+  dat <- left_join(dat, # add vars indicating which spp had missing host data
+                 filter(dat_no_imp, Facultative != "postcyclic", assumed_stage == "no")%>%
+                    select(Parasite.species, Stage, host_bm_ni = host_bm, host_tl_ni = host_tl),
+                 by = c("Parasite.species", "Stage")
+                  )
+  
+  dat <- mutate(dat, Host_no_fac = factor(Host_no_fac),
+              obs = factor(1:length(Parasite.species)))%>%
+  mutate(stage_lcl = paste0("lc", lcl_max_fac, "_", Host_no_fac),
+         is_paratenic = if_else(Facultative == "paratenic", 1, 0))%>%
+  mutate(log_end = log(imp_biovolume), log_start = log(imp_initial_biov),
+           log_dt = log(imp_avg_dt), log_dd = log(imp_avg_dd))%>%
+  mutate(rg = log_end - log_start, rgr = (log_end - log_start)/(imp_avg_dd/15),
+         tg = log(imp_biovolume-imp_initial_biov), tgr = (imp_biovolume-imp_initial_biov)/(imp_avg_dd/15) )%>%
+  mutate(rgr_perc = exp(rgr)-1)%>%
+  mutate(doubling_time = log(2)/rgr_perc)%>%
+  mutate(host_bm = log(10^(host_bm)),
+         host_bm_ni = log(10^(host_bm_ni)))
+  
+  dat <- dat%>% # trim white space
+    mutate(across(parasite_genus:parasite_phylum, trimws))
+
+  dat <- dat%>%
+    mutate(rg_missing = if_else(is.na(biovolume)|is.na(initial_biov), "yes", "no"),
+           dd_missing = if_else(is.na(avg_dd), "yes", "no"),
+           fs_missing = if_else(is.na(biovolume)&Stage == "adult", "yes", "no"),
+           bm_missing = if_else(is.na(host_bm_ni), "yes", "no"))
+
+  # also make estimate of host met rate (just a way to combined host mass and temp)
+  boltz <- 8.617333262145*10^-5 # eV per degree K
+  dat <- mutate(dat, metabolic = log((exp(host_bm)^(3/4)*exp(-0.63/(
+    boltz*(avg_temp+273.15)))) ))
+  bm_comp <- dat%>%
+    filter(Facultative != "postcyclic")%>%
+    group_by(Parasite.species, tree_tips)%>%
+    mutate(host_bm_next = lead(host_bm),
+           host_bm_ni_next = lead(host_bm_ni),
+           rg_next = lead(rg),
+           rgr_next = lead(rgr),
+           tg_next = lead(tg),
+           tgr_next = lead(tgr),
+           fs_next = lead(log_end),
+           dt_next = lead(log_dt),
+           dd_next = lead(log_dd),
+           mr_next = lead(metabolic),
+           endo_next = lead(endo_ecto),
+           host_class_next = lead(host_class), host_phylum_next = lead(host_phylum),
+           rg_missing_next = lead(rg_missing), dd_missing_next = lead(dd_missing),
+           fs_missing_next = lead(fs_missing))%>%
+    ungroup()%>%
+    mutate(step = if_else(Host.no == 1, "1 to 2",
+                          if_else(Host.no == 2, "2 to 3", "3 to 4")))
+  bm_comp <- bm_comp%>%
+    # filter(!(is.na(host_bm) | is.na(host_bm_next)))%>%
+    select(Parasite.species, parasite_genus, parasite_family, parasite_order, parasite_class, parasite_phylum,
+           host_class, host_class_next, host_phylum, host_phylum_next, tree_tips,
+           Host.no, lcl_max, 
+           host_bm, host_bm_next, host_bm_ni, host_bm_ni_next,
+           rg, rg_next, rgr, rgr_next,
+           tg, tg_next, tgr, tgr_next,
+           is = log_start,
+           fs = log_end, fs_next,
+           dt = log_dt, dt_next,
+           dd = log_dd, dd_next,
+           mr = metabolic, mr_next,
+           endo_next,
+           step,
+           rg_missing, rg_missing_next,
+           dd_missing, dd_missing_next,
+           fs_missing_next)
+  two_hosts <- filter(bm_comp, lcl_max == 2, parasite_genus != "Echinococcus")%>%
+    filter(Host.no == 1)%>%
+    rename(int_host_mass = host_bm, def_host_mass = host_bm_next, 
+           int_host_mass_ni = host_bm_ni, def_host_mass_ni = host_bm_ni_next, 
+           endo_def = endo_next,
+           int_host_class = host_class, def_host_class = host_class_next,
+           int_host_phylum = host_phylum, def_host_phylum = host_phylum_next,
+           mr_int_host = mr, mr_def_host = mr_next,
+           egg_size = is, fs_int_host = fs, fs_def_host = fs_next,
+           rg_int_host = rg, rg_def_host = rg_next,
+           tg_int_host = tg, tg_def_host = tg_next,
+           dt_int_host = dt, dt_def_host = dt_next,
+           dd_int_host = dd, dd_def_host = dd_next,
+           rgr_int_host = rgr, rgr_def_host = rgr_next,
+           tgr_int_host = tgr, tgr_def_host = tgr_next,
+           missing_rg_ih = rg_missing, missing_rg_dh = rg_missing_next,
+           missing_dd_ih = dd_missing, missing_dd_dh = dd_missing_next,
+           missing_fs = fs_missing_next
+           )%>%
+    mutate(missing_ag = if_else(missing_dd_ih == "yes" | missing_dd_dh == "yes", "yes", "no"))%>%
+    mutate(fold_change_hm = def_host_mass - int_host_mass,
+           endo_def = as.numeric(as.factor(endo_def))-1)%>%
+    select(-Host.no, -step)
+
+  two_hosts$obs <- 1:length(two_hosts$Parasite.species)
+  two_hosts <- mutate(two_hosts,
+           int_host_mass_c = int_host_mass - mean(two_hosts$int_host_mass),
+           def_host_mass_c = def_host_mass - mean(two_hosts$def_host_mass),
+           endo_def_c = endo_def - 0.5)
+  two_hosts <- mutate(two_hosts,
+                      ag_def_host = log(exp(dd_int_host) + exp(dd_def_host)),
+                      prop_growth_int = rg_int_host/(rg_int_host + rg_def_host))
+  # stnd response var
+  two_hosts <- two_hosts%>%
+    mutate(across(c(starts_with("rg_"), starts_with("dd_"), starts_with("fs_"),
+                    starts_with("ag_"), starts_with("dt_")),
+                  scale, .names = "z_{.col}"))
+  two_hosts <- two_hosts%>%
+    mutate(larval_overperf_nofe = (z_rg_int_host + -1*z_dd_int_host)/2,
+           adult_overperf_nofe = (z_rg_def_host + -1*z_dd_def_host)/2,
+           adult_overperf2_nofe = (z_fs_def_host + -1*z_ag_def_host)/2
+           )
+  two_hosts <- two_hosts%>%
+    mutate(parasite_phylum = if_else(parasite_phylum == "Platyhelminthes", "Cestoda", parasite_phylum))
+  two_hosts <- filter(two_hosts, !is.na(def_host_mass))
+  return(two_hosts)
+}
+
+two_hosts <- wrangle_data(dat)
+```
+I rearranged the stage-level parasite data so that pairs represent values in the current host and then the next host.
+
+# Descriptives
+
+Number of species: 
+
+```{r}
+two_hosts%>%
+  group_by(parasite_phylum)%>%
+  summarize(n_spp = n_distinct(Parasite.species),
+            n_fams = n_distinct(parasite_family))
+```
+
+Species with missing data:
+
+```{r}
+two_hosts%>%
+  summarize(int_host_mass = sum(is.na(int_host_mass_ni)),
+            def_host_mass = sum(is.na(def_host_mass_ni)))
+```
+
+Range in intermediate host masses (orders of magnitude)
+
+```{r}
+log10(exp(max(two_hosts$int_host_mass, na.rm = T))) -
+  log10(exp(min(two_hosts$int_host_mass, na.rm = T)))
+```
+
+Range in definitive host masses
+
+```{r}
+log10(exp(max(two_hosts$def_host_mass, na.rm = T))) -
+  log10(exp(min(two_hosts$def_host_mass, na.rm = T)))
+```
+Quantiles for IH mass:
+```{r}
+summary(two_hosts$int_host_mass)
+```
+
+Quantiles for DH mass:
+```{r}
+summary(two_hosts$def_host_mass)
+```
+
+# Models - environmental coupling between stages
+
+## Host mass
+
+We'll look at whether host quality is correlated among stages - do worms with large first hosts have large second hosts?
+
+We fit multivariate models with intermediate and definitive host masses as the two response variables. We fit a series of models: 1) intercept-only, no covariance between response variables, 2) allow covariance, i.e. species with big intermediate hosts have big definitive hosts, 3) add parasite taxonomy, 4) allow taxonomic covariance, e.g. families with large intermediate hosts have big definitive hosts. In this last model, I only allow covariance at the genus, family, and order level, given that there were few classes and phyla (and there was little variation explained by these taxonomic levels, see below).
+
+```{r}
+prior_notax <- list(R = list(R1 = list(V = diag(2), n = 1)))
+prior_tax <- list(R = list(R1 = list(V = diag(2), n = 1)),
+                  G = list(
+                    G1 = list(V = diag(2)/5, n = 2),
+                    G2 = list(V = diag(2)/5, n = 2),
+                    G3 = list(V = diag(2)/5, n = 2),                       
+                    G4 = list(V = diag(2)/5, n = 2),
+                    G5 = list(V = diag(2)/5, n = 2)
+                    ))
+prior_tax_nophy <- list(R = list(R1 = list(V = diag(2), n = 1)),
+                  G = list(
+                    G1 = list(V = diag(2)/5, n = 2),
+                    G2 = list(V = diag(2)/5, n = 2),
+                    G3 = list(V = diag(2)/5, n = 2),                       
+                    G4 = list(V = diag(2)/5, n = 2)
+                    ))
+
+prior_tax_ord <- list(R = list(R1 = list(V = diag(2), n = 1)),
+                  G = list(
+                    G1 = list(V = diag(2)/3, n = 2),
+                    G2 = list(V = diag(2)/3, n = 2),
+                    G2 = list(V = diag(2)/3, n = 2)
+                    ))
+prior_tax_fam <- list(R = list(R1 = list(V = diag(2), n = 1)),
+                  G = list(
+                    G1 = list(V = diag(2)/3, n = 2),
+                    G2 = list(V = diag(2)/3, n = 2),
+                    G3 = list(V = diag(2)/3, n = 2),
+                    G4 = list(V = diag(2)/3, n = 2)
+                    ))
+```
+
+```{r}
+chains0 = list()
+chains1 = list()
+chains2 = list()
+chains2.5 = list()
+chains3 = list()
+chains3_ord = list()
+chains3_fam = list()
+
+nit <- 800 # number of iterations for models
+bi <- 500 # burnin iterations
+
+for(i in 1:100){
+
+  iname <- ifelse(i < 10, paste0('00',i), 
+                  ifelse(i < 100, paste0('0',i),i))
+  fname_p <- paste0('../../data/imputed_stage_level_tables/stage_level_imputed',iname,'.csv')
+  dat_imp <- read.csv(file = fname_p, header = T)
+  
+  two_hosts_imp <- wrangle_data(dat_imp)
+    
+  # no cov IH, DH
+  chains0[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 , 
+                rcov = ~idh(trait):units, # residual var-covar unstructured
+                nitt = nit, thin = 30, burnin = bi,
+                # prior = prior,
+                data = as.data.frame(two_hosts_imp),
+                family = c("gaussian", "gaussian"),
+                pr=F, 
+                verbose = F)
+  # cov IH, DH
+  chains1[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 , 
+                  rcov = ~us(trait):units, # residual var-covar unstructured
+                  nitt = nit, thin = 30, burnin = bi,
+                  prior = prior_notax,
+                  data = as.data.frame(two_hosts_imp),
+                  family = c("gaussian", "gaussian"),
+                  pr=F, 
+                  verbose = F)
+  # cov IH, DH and taxonomy
+  chains2[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 , 
+                  random = ~
+                    idh(trait):parasite_genus +
+                    idh(trait):parasite_family +
+                    idh(trait):parasite_order +
+                    idh(trait):parasite_class +
+                    idh(trait):parasite_phylum,
+                  rcov = ~us(trait):units, # residual var-covar unstructured
+                  nitt = nit, thin = 30, burnin = bi,
+                  prior = prior_tax,
+                  data = as.data.frame(two_hosts_imp),
+                  family = c("gaussian", "gaussian"),
+                  pr=T, 
+                  verbose = F)
+  
+  # move parasite group into fixed effects
+  chains2.5[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 + trait:parasite_phylum,
+                  random = ~
+                    idh(trait):parasite_genus +
+                    idh(trait):parasite_family +
+                    idh(trait):parasite_order +
+                    idh(trait):parasite_class,
+                  rcov = ~us(trait):units, # residual var-covar unstructured
+                  nitt = nit, thin = 30, burnin = bi,
+                  prior = prior_tax_nophy,
+                  data = as.data.frame(two_hosts_imp),
+                  family = c("gaussian", "gaussian"),
+                  pr=F,
+                  verbose = F)
+  # cov IH, DH and taxonomic covariance
+  chains3[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 ,
+                  random = ~
+                    us(trait):parasite_genus +
+                    us(trait):parasite_family +
+                    us(trait):parasite_order +
+                    idh(trait):parasite_class +
+                    idh(trait):parasite_phylum, # covariance among genus, family, order levels
+                  rcov = ~us(trait):units, # residual var-covar unstructured
+                  nitt = nit, thin = 30, burnin = bi,
+                  prior = prior_tax,
+                  data = as.data.frame(two_hosts_imp),
+                  family = c("gaussian", "gaussian"),
+                  pr=T,
+                  verbose = F)
+  # cov IH, DH and taxonomic covariance
+  chains3_ord[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 ,
+                  random = ~
+                    us(trait):parasite_order +
+                    idh(trait):parasite_class +
+                    idh(trait):parasite_phylum, # covariance among genus, family, order levels
+                  rcov = ~us(trait):units, # residual var-covar unstructured
+                  nitt = nit, thin = 30, burnin = bi,
+                  prior = prior_tax_ord,
+                  data = as.data.frame(two_hosts_imp),
+                  family = c("gaussian", "gaussian"),
+                  pr=T,
+                  verbose = F)
+  # cov IH, DH and taxonomic covariance
+  chains3_fam[[i]] <- MCMCglmm(cbind(int_host_mass, def_host_mass) ~ trait-1 ,
+                  random = ~
+                    us(trait):parasite_family +
+                    us(trait):parasite_order +
+                    idh(trait):parasite_class +
+                    idh(trait):parasite_phylum, # covariance among genus, family, order levels
+                  rcov = ~us(trait):units, # residual var-covar unstructured
+                  nitt = nit, thin = 30, burnin = bi,
+                  prior = prior_tax_fam,
+                  data = as.data.frame(two_hosts_imp),
+                  family = c("gaussian", "gaussian"),
+                  pr=T,
+                  verbose = F)
+
+  print(paste('imputation', i, 'finished'))
+}
+```
+
+A first way to compare these models is to look at the model deviance. Allowing covariance between intermediate and definitive host mass slightly improved the model (black vs red models), but this improvement was small relative to adding taxonomy (green). Clearly different taxa infect intermediate and definitive hosts of different mass. Allowing taxonomic covariance (blue) was not a clear improvement.
+
+```{r}
+name_dev_var <- function(x){
+  dev <- x$Deviance
+  dim(dev) <- c(length(dev),1)
+  dimnames(dev) <- list(NULL, 'deviance')
+  return(dev)
+}
+
+mod_comb_dev0 <- runjags::combine.mcmc(mcmc.list(lapply(chains0, name_dev_var)))
+mod_comb_dev1 <- runjags::combine.mcmc(mcmc.list(lapply(chains1, name_dev_var)))
+mod_comb_dev2 <- runjags::combine.mcmc(mcmc.list(lapply(chains2, name_dev_var)))
+mod_comb_dev3 <- runjags::combine.mcmc(mcmc.list(lapply(chains3, name_dev_var)))
+plot(mcmc.list(mod_comb_dev0, mod_comb_dev1,mod_comb_dev2,mod_comb_dev3), density = F)
+```
+
+Here are the DIC values for the models.
+
+```{r}
+cat("DIC, int-only:", mean(unlist(lapply(chains0, function(x){x$DIC}))) )
+```
+```{r}
+cat("DIC, host number (cont);", mean(unlist(lapply(chains1, function(x){x$DIC}))) )
+```
+```{r}
+cat("DIC, host number (cat);", mean(unlist(lapply(chains2, function(x){x$DIC}))) )
+```
+
+```{r}
+cat("DIC, host number (cat);", mean(unlist(lapply(chains3, function(x){x$DIC}))) )
+```
+
+Here is the delta DIC for adding the residual covariance.
+
+```{r}
+cat('Delta DIC, int-only vs res covariance:', 
+    mean(unlist(lapply(chains0, function(x){x$DIC}))) - mean(unlist(lapply(chains1, function(x){x$DIC}))),
+    '(higher is better)')
+```
+
+And then for adding taxonomy...
+
+```{r}
+cat('Delta DIC, +taxonomy:', 
+    mean(unlist(lapply(chains1, function(x){x$DIC}))) - mean(unlist(lapply(chains2, function(x){x$DIC}))),
+    '(higher is better)')
+```
+
+...and for adding taxonomic covariance.
+
+```{r}
+cat('Delta DIC, +taxonomic cov in host mass:', 
+    mean(unlist(lapply(chains2, function(x){x$DIC}))) - mean(unlist(lapply(chains3, function(x){x$DIC}))),
+    '(higher is better)')
+```
+
+The three main groups of parasites do not seem to differ fundamentally in intermediate or definitive host mass. When we took parasite phylum from the random to the fixed effects, it did not improve the model. This can also be seen when we look at what taxonomic levels vary with regards to host mass.
+
+```{r}
+cat('Delta DIC, +phylum in fixed effects:', 
+    mean(unlist(lapply(chains2, function(x){x$DIC}))) - mean(unlist(lapply(chains2.5, function(x){x$DIC}))),
+    '(higher is better)')
+```
+
+We are mainly interested in the coupling (covariance) between intermediate and definitive host mass.
+
+```{r}
+# combine the chains
+mod_comb_sol0 <- runjags::combine.mcmc(mcmc.list(lapply(chains0, function(x) {x$Sol})))
+mod_comb_sol1 <- runjags::combine.mcmc(mcmc.list(lapply(chains1, function(x) {x$Sol})))
+mod_comb_sol2 <- runjags::combine.mcmc(mcmc.list(lapply(chains2, function(x) {x$Sol})))
+mod_comb_sol3 <- runjags::combine.mcmc(mcmc.list(lapply(chains3, function(x) {x$Sol})))
+
+mod_comb_vcv1 <- runjags::combine.mcmc(mcmc.list(lapply(chains1, function(x) {x$VCV})))
+mod_comb_vcv2 <- runjags::combine.mcmc(mcmc.list(lapply(chains2, function(x) {x$VCV})))
+mod_comb_vcv3 <- runjags::combine.mcmc(mcmc.list(lapply(chains3, function(x) {x$VCV})))
+mod_comb_vcv3ord <- runjags::combine.mcmc(mcmc.list(lapply(chains3_ord, function(x) {x$VCV})))
+mod_comb_vcv3fam <- runjags::combine.mcmc(mcmc.list(lapply(chains3_fam, function(x) {x$VCV})))
+```
+
+When we look at the model without worm taxonomy, we see that this covariance is significantly different from zero, indicating worms with relatively large intermediate hosts also have relatively large definitive hosts. Also of note: there is about 4 times as much variance in intermediate host size compared to definitive host size.
+
+```{r}
+summary(mod_comb_vcv1)
+```
+
+When we express it as a correlation instead of a covariance, it is around 0.2.
+
+```{r}
+summary(posterior.cor(mod_comb_vcv1))
+```
+
+We can also express it as a univariate regression coefficient. Here is the percent increase in definitive host mass with a doubling of intermediate host mass.
+
+```{r}
+summary(
+  exp( mod_comb_vcv1[,"traitint_host_mass:traitdef_host_mass.units"]/
+         mod_comb_vcv1[,"traitint_host_mass:traitint_host_mass.units"] * log(2)
+       ) - 1
+)
+```
+
+Here is the percent increase in intermediate host mass with a doubling of definitive host mass.
+
+```{r}
+summary(
+  exp( mod_comb_vcv1[,"traitint_host_mass:traitdef_host_mass.units"]/
+         mod_comb_vcv1[,"traitdef_host_mass:traitdef_host_mass.units"] * log(2)
+       ) - 1
+)
+```
+
+Assuming host masses are bivariate normal, we can plot the confidence ellipse from the trait means and covariance matrix.
+
+```{r}
+# function to calculate CI ellipse
+ci_ellipse1 <- function(cm, mean_x, mean_y){ # take in 2x2 cov matrix, return 95% CI ellipsoid
+  
+  ax <- cm[1,1]
+  bx <- cm[1,2]
+  cx <- cm[2,2]
+  lambda1 <- ((ax + cx)/2) + sqrt( ((ax - cx)/2)^2 + bx^2  )
+  lambda2 <- ((ax + cx)/2) - sqrt( ((ax - cx)/2)^2 + bx^2  )
+  phi <- atan2(lambda1-ax,bx)
+  t <- c(seq(0, 2*pi, by = 0.1), pi/2, pi, pi + pi/2, pi*2) # radian sequence
+  
+  x <- sqrt(lambda1)*cos(phi)*cos(t) - sqrt(lambda2)*sin(phi)*sin(t) + 
+    mean_x
+  y <- sqrt(lambda1)*sin(phi)*cos(t) + sqrt(lambda2)*cos(phi)*sin(t) + 
+    mean_y
+  ell <- data.frame(x,y, t) # dataframe for ellipse
+  return(ell)
+}
+```
+```{r}
+ell <- ci_ellipse1(cm = matrix(6*posterior.mode(mod_comb_vcv1[,1:4]), 2,2),
+                  mean_x = posterior.mode(mod_comb_sol1[,"traitint_host_mass"]),
+                  mean_y = posterior.mode(mod_comb_sol1[,"traitdef_host_mass"]))
+```
+
+The ellipse is longer along the x than the y, indicating that intermediate host mass varies among species more than definitive host mass. The upward tilt indicates positive covariance; bigger intermediate hosts are associated with bigger definitive hosts.
+
+```{r}
+ggplot(two_hosts, aes(x = int_host_mass, y = def_host_mass)) +
+  geom_point() +
+  geom_polygon(data = arrange(ell,t),
+             aes(x = x, y = y),
+             color = "green", fill = "green", alpha = 0.4) 
+  # geom_line(data = filter(ell, round(t,2)==0 | round(t,2)==3.14),
+  #            aes(x = x, y = y),
+  #            color = "green", size = 1.5) +
+  # geom_line(data = filter(ell, round(t,2)==1.57 | round(t,2)==4.71),
+  #            aes(x = x, y = y),
+  #            color = "green", size = 1.5)
+```
+And the trend appears similar in acanthocephalans, nematodes, and cestodes.
+
+```{r}
+ggplot(two_hosts, aes(x = int_host_mass, y = def_host_mass)) +
+  geom_point(aes(color = parasite_phylum, shape = parasite_phylum)) +
+  geom_smooth(aes(color = parasite_phylum, group = parasite_phylum),
+              method = lm, se = F) +
+  geom_polygon(data = arrange(ell,t),
+             aes(x = x, y = y),
+             color = "lightgray", fill = "lightgray", alpha = 0.4) 
+```
+
+The last two plots showed the most likely confidence ellipse. It does not display the variation in the estimated relationship? Let's draw 10 ellipses using the posterior distribution. The trend in the data is quite consistent, which is not surprising, since we have not considered taxonomy yet.
+
+```{r}
+ps <- sample(1:length(mod_comb_vcv1[,1]), size = 10)
+for(i in ps){
+  ell_i <- ci_ellipse1(cm = matrix(6*(mod_comb_vcv1[i,1:4]), 2,2),
+                  mean_x = mod_comb_sol1[i,"traitint_host_mass"],
+                  mean_y = mod_comb_sol1[i,"traitdef_host_mass"])
+  ell_i$p_samp <- i
+  if(i == ps[1]){
+    ell_many <- ell_i
+  } else {
+    ell_many <- bind_rows(ell_many, ell_i)
+  }
+}
+```
+```{r}
+sx <- summary(posterior.cor(mod_comb_vcv1[,1:4]))
+cor_anno <- paste0(round(sx$quantiles[2,3], 2),
+                   " [", round(sx$quantiles[2,1], 2), " to ",round(sx$quantiles[2,5], 2),"]")
+reg <- summarize(two_hosts,
+                 x1 = min(int_host_mass),
+                 x2 = max(int_host_mass))%>%
+  mutate(slope = median(mod_comb_vcv1[,2]/mod_comb_vcv1[,1]))%>%
+  mutate(y1 = x1*slope,
+         y2 = x2*slope
+         )
+```
+
+```{r}
+# variable noting where int host or def host mass missing
+two_hosts <- two_hosts%>%
+  mutate(missing_bm = if_else(is.na(int_host_mass_ni)|is.na(def_host_mass_ni), "missing", "not missing"))
+```
+
+
+```{r}
+f2a <- ggplot(two_hosts%>%
+                mutate(missing = if_else(missing_bm == "missing", "zz", parasite_phylum)),
+              aes(x = exp(int_host_mass), y = exp(def_host_mass))) +
+  geom_vline(xintercept = exp(posterior.mode(mod_comb_sol1[,"traitint_host_mass"])),
+             linetype = "dotted") +
+  geom_hline(yintercept = exp(posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])),
+             linetype = "dotted") +
+  geom_point(aes(shape = missing),
+             alpha = 0.33, size = 1) +
+  # geom_path(data = arrange(ell_many,p_samp,t),
+  #           aes(x = exp(x), y = exp(y), group = p_samp),
+  #           color = "black",
+  #           alpha = 0.25) +
+  # geom_segment(data=reg, aes(x=exp(x1), xend=exp(x2), 
+  #                            y=exp(y1+posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])), 
+  #                            yend=exp(y2+posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])))) +
+  geom_smooth(method=lm, se = F, color = "black") +
+  scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_shape_manual(values = c(16,17,15,4)) +
+  labs(x = "Intermediate host mass (g)", y = "Definitive host mass (g)", 
+       shape = NULL) +
+  theme(panel.grid.minor = element_blank(),
+        # plot.title = element_text(size = 10),
+        legend.background = element_rect(color = "black"),
+        legend.position = c(0.975,0.025),
+        legend.justification = c(1,0),
+        legend.text = element_text(size = 8)
+        ) +
+  guides(shape = F) + #guide_legend(override.aes = list(alpha = 1))) +
+  annotate("text", label = cor_anno,
+           x = max(exp(two_hosts$int_host_mass), na.rm = T),
+           y = min(exp(two_hosts$def_host_mass), na.rm = T),
+           color = "black", size = 3, hjust = "right") 
+f2a
+```
+
+We can also make the same plot, but with the axes representing residuals, i.e. the host sizes relative to expectations.
+```{r}
+ggplot(two_hosts, aes(x = exp(int_host_mass-posterior.mode(mod_comb_sol1[,"traitint_host_mass"])),
+                             y = exp(def_host_mass-posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])))) +
+  geom_vline(xintercept = 1,
+             linetype = "dotted") +
+  geom_hline(yintercept = 1,
+             linetype = "dotted") + 
+  geom_point(aes(shape = parasite_phylum),
+             alpha = 0.33,
+             size = 1) +
+  geom_smooth(method = lm, se = F, color = "black") +
+  # geom_segment(data=reg, aes(x=exp(x1-posterior.mode(mod_comb_sol1[,"traitint_host_mass"])),
+  #                            xend=exp(x2-posterior.mode(mod_comb_sol1[,"traitint_host_mass"])),
+  #                            y=exp(y1-posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])),
+  #                            yend=exp(y2-posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])))) +
+  scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  labs(x = "Fold-change from expected intermediate host mass", 
+       y = "Fold-change from expected definitive host mass", 
+       shape = NULL) +
+  theme(panel.grid.minor = element_blank(),
+        # plot.title = element_text(size = 10),
+        legend.background = element_rect(color = "black"),
+        legend.position = c(0.975,0.025),
+        legend.justification = c(1,0),
+        legend.text = element_text(size = 8)
+        ) +
+  guides(shape = F) + #guide_legend(override.aes = list(alpha = 1))) +
+  annotate("text", label = cor_anno,
+           x = exp(max(two_hosts$int_host_mass, na.rm = T) - posterior.mode(mod_comb_sol1[,"traitint_host_mass"])),
+           y = exp(max(two_hosts$def_host_mass, na.rm = T) - posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])),
+           color = "black", size = 3, hjust = "right")
+```
+
+
+When we add taxonomy to the model, the covariance between intermediate and definitive host mass decreases to around zero.
+
+```{r}
+summary(posterior.cor(mod_comb_vcv2[,11:14]))
+```
+
+Here's a plot showing how the addition of taxonomy impacts the correlation between intermediate and definitive host mass.
+
+```{r}
+s1 <- data.frame(
+  rbind(summary(posterior.cor(mod_comb_vcv1[,1:4])[,2])$quantiles,
+        summary(posterior.cor(mod_comb_vcv2[,11:14])[,2])$quantiles,
+        summary(posterior.cor(mod_comb_vcv3[,17:20])[,2])$quantiles
+        )
+  )
+names(s1) <- c("lwr", "lwr2", "mean", "upr2", "upr")
+s1$model <- c("no taxonomy", "taxonomy", "taxonomy covariance")
+ggplot(s1, aes(x = model, y = mean, ymax = upr, ymin = lwr)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(y = "Resid correlation, intermediate and definitve host mass") +
+  theme(panel.grid.major.x = element_blank())
+```
+
+We can visualize the ellipse from the taxonomic model as well. The orange ellipse shows the residual (species-level) variance and covariance after accounting for taxonomy. It is much smaller because taxonomy accounts for considerable variation in both intermediate and definitive host mass. The covariance also disappears, suggesting taxonomy explains this correlation as well.
+
+```{r}
+ell2 <- ci_ellipse1(cm = matrix(6*posterior.mode(mod_comb_vcv2[,11:14]), 2,2),
+                  mean_x = posterior.mode(mod_comb_sol2[,"traitint_host_mass"]),
+                  mean_y = posterior.mode(mod_comb_sol2[,"traitdef_host_mass"]))
+```
+```{r}
+ggplot(two_hosts, aes(x = int_host_mass, y = def_host_mass)) +
+  geom_point() +
+  geom_polygon(data = arrange(ell,t),
+             aes(x = x, y = y),
+             color = "green", fill = "green", alpha = 0.4) +
+  geom_line(data = filter(ell, round(t,2)==0 | round(t,2)==3.14),
+             aes(x = x, y = y),
+             color = "green", size = 1.5) +
+  geom_line(data = filter(ell, round(t,2)==1.57 | round(t,2)==4.71),
+             aes(x = x, y = y),
+             color = "green", size = 1.5) +
+  geom_polygon(data = arrange(ell2,t),
+             aes(x = x, y = y),
+             color = "orange", fill = "orange", alpha = 0.4) +
+  geom_line(data = filter(ell2, round(t,2)==0 | round(t,2)==3.14),
+             aes(x = x, y = y),
+             color = "orange", size = 1.5) +
+  geom_line(data = filter(ell2, round(t,2)==1.57 | round(t,2)==4.71),
+             aes(x = x, y = y),
+             color = "orange", size = 1.5) 
+  # stat_ellipse(type="norm", level = 0.95) +
+```
+
+To gauge how taxonomy might explain the covariance, let's plot the biggest taxonomic families. The 8 families with the most species are color coded in the next plot. The families tend to differ more along the x-axis than the y-axis, suggesting taxa vary more in their intermediate hosts than definitive hosts. Also, some families that have big intermediate hosts have big definitive hosts, suggesting there is taxonomic covariance among life stages.
+
+```{r}
+big_fams <- two_hosts%>%
+  group_by(parasite_family)%>%
+  summarize(n=n())%>%
+  arrange(desc(n))%>%
+  slice(1:8)%>%
+  .$parasite_family
+```
+```{r}
+ggplot(two_hosts, aes(int_host_mass, def_host_mass)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(color = "black", linetype = "dotted",
+              se = F, method = lm) +
+  geom_point(data = filter(two_hosts, parasite_family %in% big_fams),
+             aes(x=int_host_mass, y=def_host_mass, color = parasite_family)) +
+  # geom_smooth(data = filter(two_hosts, parasite_family %in% big_fams),
+  #            aes(x=int_host_mass, y=def_host_mass, color = parasite_family), 
+  #            method = lm, se = F) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_x_continuous(limits = c(min(two_hosts$int_host_mass), max(two_hosts$int_host_mass))) +
+  scale_y_continuous(limits = c(min(two_hosts$def_host_mass), max(two_hosts$def_host_mass)))
+```
+
+
+### Taxonomic covariance
+
+Let's have a closer look at taxonomic covariance. Do parasite families with large intermediate hosts infect large definitive hosts? Here is the summary of the model allowing taxonomic covariance. Although this model was not a clear improvement compared to the model without taxonomic covariance, the family-level covariance is non-zero.
+
+```{r}
+summary(mod_comb_vcv3)
+```
+
+Since taxonomy is so important, let's plot how much variance it explains in intermediate and definitive host mass.
+
+```{r}
+resi <- which( grepl(colnames(mod_comb_vcv2), pattern = ".units")) # res var-cov
+st_re <- which( grepl(colnames(mod_comb_vcv2), pattern = "traitint_host_mass")) # var comp for int host
+st_re <- st_re[!st_re %in% resi] # just tax var comp
+st_re <- c(st_re, 
+           which(grepl(colnames(mod_comb_vcv2), 
+                       pattern = "traitint_host_mass:traitint_host_mass.units"))) # tax vc + resid vc
+
+tax_eff_st <- rbind(
+  quantile(mod_comb_vcv2[,"traitint_host_mass:traitint_host_mass.units"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_genus"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_family"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_order"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_class"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_phylum"], probs = c(0.025, 0.5, 0.975)),
+  quantile(rowSums(mod_comb_vcv2[,st_re[1:5]]), probs = c(0.025, 0.5, 0.975))
+)
+tax_eff_st <- data.frame(tax_eff_st)
+names(tax_eff_st) <- c('vc.lwr', 'vc.fit', 'vc.upr')
+tax_eff_st$t_level <- factor(c('species\n(residual)', 'genus', 'family', 'order', 'class', 'phylum', 'tax total'),
+                          levels = c('species\n(residual)', 'genus', 'family', 'order', 'class', 'phylum', 'tax total'))
+tax_eff_st$trait <- "intermediate host mass"
+
+resi <- which( grepl(colnames(mod_comb_vcv2), pattern = ".units")) # res var-cov
+st_re <- which( grepl(colnames(mod_comb_vcv2), pattern = "traitdef_host_mass")) # var comp for ini size
+st_re <- st_re[!st_re %in% resi] # just tax var comp
+st_re <- c(st_re, 
+           which(grepl(colnames(mod_comb_vcv2), 
+                       pattern = "traitdef_host_mass:traitdef_host_mass.units"))) # tax vc + resid vc
+
+tax_eff_st2 <- rbind(
+  quantile(mod_comb_vcv2[,"traitdef_host_mass:traitdef_host_mass.units"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_genus"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_family"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_order"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_class"], probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_phylum"], probs = c(0.025, 0.5, 0.975)),
+  quantile(rowSums(mod_comb_vcv2[,st_re[1:5]]), probs = c(0.025, 0.5, 0.975))
+)
+tax_eff_st2 <- data.frame(tax_eff_st2)
+names(tax_eff_st2) <- c('vc.lwr', 'vc.fit', 'vc.upr')
+tax_eff_st2$t_level <- factor(c('species\n(residual)','genus', 'family', 'order', 'class', 'phylum', 'tax total'),
+                          levels = c('species\n(residual)','genus', 'family', 'order', 'class', 'phylum', 'tax total'))
+tax_eff_st2$trait <- "definitive host mass"
+
+tax_eff_st <- bind_rows(tax_eff_st, tax_eff_st2)
+rm(tax_eff_st2, st_re, resi)
+```
+
+Here is how the variance in intermediate and definitive host mass is divided among taxonomic levels. Clearly, there is more variance in intermediate host mass than definitive host mass. It also has a different taxonomic distribution. IH mass varies more among families; DH mass varies most among genera.
+
+```{r}
+ggplot(tax_eff_st%>%
+                mutate(trait = fct_relevel(trait, c("intermediate host mass", "definitive host mass"))),
+              aes(x = t_level, y = vc.fit, shape = trait)) +
+  geom_pointrange(aes(ymin = vc.lwr, ymax = vc.upr),
+                  position = position_dodge(width = 0.33)) +
+  labs(x = NULL, y = 'Variance explained', 
+       # title = 'Prop. total variance explained',
+       color = NULL, shape = NULL) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.background = element_rect(color = "black"),
+        legend.position = c(0.5,0.8)
+        ) +
+  scale_shape_manual(values = c(3,4))
+```
+
+Since there is more variance in intermediate host mass than definitive host mass, we should probably plot the taxonomic variance components proportionally. That is, what proportion of the total variance can be explained by taxonomy (i.e. like phylogenetic signal)?
+
+```{r}
+resi <- which( grepl(colnames(mod_comb_vcv2), pattern = ".units")) # res var-cov
+st_re <- which( grepl(colnames(mod_comb_vcv2), pattern = "traitint_host_mass")) # var comp for ini size
+st_re <- st_re[!st_re %in% resi] # just tax var comp
+st_re <- c(st_re, 
+           which(grepl(colnames(mod_comb_vcv2), 
+                       pattern = "traitint_host_mass:traitint_host_mass.units"))) # tax vc + resid vc
+
+tax_eff_st <- rbind(
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_genus"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_family"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_order"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_class"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitint_host_mass.parasite_phylum"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(rowSums(mod_comb_vcv2[,st_re[1:5]])/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975))
+)
+tax_eff_st <- data.frame(tax_eff_st)
+names(tax_eff_st) <- c('vc.lwr', 'vc.fit', 'vc.upr')
+tax_eff_st$t_level <- factor(c('genus', 'family', 'order', 'class', 'phylum', 'total'),
+                          levels = c('genus', 'family', 'order', 'class', 'phylum', 'total'))
+tax_eff_st$trait <- "intermediate host mass"
+
+resi <- which( grepl(colnames(mod_comb_vcv2), pattern = ".units")) # res var-cov
+st_re <- which( grepl(colnames(mod_comb_vcv2), pattern = "traitdef_host_mass")) # var comp for ini size
+st_re <- st_re[!st_re %in% resi] # just tax var comp
+st_re <- c(st_re, 
+           which(grepl(colnames(mod_comb_vcv2), 
+                       pattern = "traitdef_host_mass:traitdef_host_mass.units"))) # tax vc + resid vc
+
+tax_eff_st2 <- rbind(
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_genus"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_family"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_order"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_class"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(mod_comb_vcv2[,"traitdef_host_mass.parasite_phylum"]/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975)),
+  quantile(rowSums(mod_comb_vcv2[,st_re[1:5]])/
+             rowSums(mod_comb_vcv2[,st_re]), probs = c(0.025, 0.5, 0.975))
+)
+tax_eff_st2 <- data.frame(tax_eff_st2)
+names(tax_eff_st2) <- c('vc.lwr', 'vc.fit', 'vc.upr')
+tax_eff_st2$t_level <- factor(c('genus', 'family', 'order', 'class', 'phylum', 'total'),
+                          levels = c('genus', 'family', 'order', 'class', 'phylum', 'total'))
+tax_eff_st2$trait <- "definitive host mass"
+
+tax_eff_st <- bind_rows(tax_eff_st, tax_eff_st2)
+rm(tax_eff_st2, st_re, resi)
+```
+
+Proportionally more variance in intermediate host mass is explained by taxonomy than for definitive host mass. Also more variation in intermediate host mass is explained by taxonomy.
+
+```{r}
+f2b <- ggplot(tax_eff_st%>%
+                mutate(trait = fct_relevel(trait, c("intermediate host mass", "definitive host mass"))),
+              aes(x = t_level, y = vc.fit, shape = trait)) +
+  geom_pointrange(aes(ymin = vc.lwr, ymax = vc.upr),
+                  position = position_dodge(width = 0.33)) +
+  labs(x = NULL, y = 'Variance explained', 
+       # title = 'Prop. total variance explained',
+       color = NULL, shape = NULL) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.background = element_rect(color = "black"),
+        legend.position = c(0.5,0.8),
+        legend.text = element_text(size = 8)
+        ) +
+  scale_y_continuous(limits = c(0,1)) +
+  scale_shape_manual(values = c(3,4))
+f2b
+```
+Since we report some of these values in the ms, here is the proportion of variance explained by genus,
+
+```{r}
+tax_eff_st%>%
+  filter(t_level == "genus")%>%
+  mutate(across(vc.lwr:vc.upr, ~round(.x,2)))%>%
+  select(t_level, trait, vc.lwr:vc.upr)
+```
+
+family,
+
+```{r}
+tax_eff_st%>%
+  filter(t_level == "family")%>%
+  mutate(across(vc.lwr:vc.upr, ~round(.x,2)))%>%
+  select(t_level, trait, vc.lwr:vc.upr)
+```
+
+order, 
+
+```{r}
+tax_eff_st%>%
+  filter(t_level == "order")%>%
+  mutate(across(vc.lwr:vc.upr, ~round(.x,2)))%>%
+  select(t_level, trait, vc.lwr:vc.upr)
+```
+
+and overall. 
+
+```{r}
+tax_eff_st%>%
+  filter(t_level == "total")%>%
+  mutate(across(vc.lwr:vc.upr, ~round(.x,2)))%>%
+  select(t_level, trait, vc.lwr:vc.upr)
+```
+
+
+Now we look at the correlation between host masses at the taxonomic level. To see where covariance arises, we add taxonomic levels from root to tip. For example, we test covariance among orders and then, controlling for order-level effects, we test whether there is covariance among parasite families and so on. At each level, we then take averages for the conditional residuals and plot them, along with the covariance.
+
+```{r}
+l <- length(two_hosts$Parasite.species)
+
+# marginal predictions from trait means, "raw"
+p_raw <- lapply(chains1, 
+                function(x){predict.MCMCglmm(x, marginal = x$Random$formula)}
+                )
+p_raw <- data.frame(p_raw)
+p_raw <- apply(p_raw, MARGIN = 1, FUN = median)
+names(p_raw) <- NULL
+
+# marginal predictions, i.e. trait predicted with just fixed effects
+p_m <- lapply(chains3, 
+              function(x){
+                predict.MCMCglmm(x, marginal = ~
+                                   us(trait):parasite_genus +
+                                   us(trait):parasite_family +
+                                   us(trait):parasite_order +
+                                   idh(trait):parasite_class +
+                                   idh(trait):parasite_phylum
+                        )})
+p_m <- data.frame(p_m)
+p_m <- apply(p_m, MARGIN = 1, FUN = median)
+names(p_m) <- NULL
+
+# conditional predictions for orders (removes effect of class)
+p_o <- lapply(chains3_ord, 
+              function(x){predict.MCMCglmm(x, 
+                                           marginal = ~ us(trait):parasite_order)})
+p_o <- data.frame(p_o)
+p_o <- apply(p_o, MARGIN = 1, FUN = median)
+names(p_o) <- NULL
+
+# conditional predictions for fams (removes effect of order, class)
+p_f <- lapply(chains3_ord, function(x){predict.MCMCglmm(x, 
+                                                         marginal = NULL)})
+p_f <- data.frame(p_f)
+p_f <- apply(p_f, MARGIN = 1, FUN = median)
+names(p_f) <- NULL
+
+# conditional predictions for genera (removes effect of fam, order, class)
+p_g <- lapply(chains3_fam, function(x){predict.MCMCglmm(x, 
+                                                         marginal = NULL)})
+p_g <- data.frame(p_g)
+p_g <- apply(p_g, MARGIN = 1, FUN = median)
+names(p_g) <- NULL
+
+# conditional predictions, i.e. trait predicted with fixed effects and all taxonomy
+p_c <- lapply(chains3, function(x){predict.MCMCglmm(x, marginal = NULL)})
+p_c <- data.frame(p_c)
+p_c <- apply(p_c, MARGIN = 1, FUN = median)
+names(p_c) <- NULL
+```
+
+```{r}
+# add predicteds and residuals to df
+p <- data.frame(hm_int_pred = p_raw[1:l],
+                hm_def_pred = p_raw[(l+1):(l*2)],
+                hm_int_predg = p_g[1:l],
+                hm_def_predg = p_g[(l+1):(l*2)],
+                hm_int_predf = p_f[1:l],
+                hm_def_predf = p_f[(l+1):(l*2)],
+                hm_int_predo = p_o[1:l],
+                hm_def_predo = p_o[(l+1):(l*2)],
+                hm_int_preds = p_c[1:l],
+                hm_def_preds = p_c[(l+1):(l*2)]
+                )
+
+two_hosts_p <- bind_cols(two_hosts, p)%>%
+  mutate(int_host_resm = int_host_mass - hm_int_pred,
+         def_host_resm = def_host_mass - hm_def_pred,
+         
+         int_host_res_sp = int_host_mass - hm_int_preds,
+         def_host_res_sp = def_host_mass - hm_def_preds,
+         
+         int_host_resg = int_host_mass - hm_int_predg,
+         def_host_resg = def_host_mass - hm_def_predg,
+         
+         int_host_resf = int_host_mass - hm_int_predf,
+         def_host_resf = def_host_mass - hm_def_predf,
+         
+         int_host_reso = int_host_mass - hm_int_predo,
+         def_host_reso = def_host_mass - hm_def_predo
+         )
+```
+
+
+
+```{r}
+# family avgs
+fd <- two_hosts_p%>%
+  group_by(parasite_phylum, parasite_family)%>%
+  summarise(across(int_host_resf:def_host_resf, mean, na.rm = T), n = n())%>%
+  rename_with(~gsub("f$", "", .x))%>%
+  mutate(level = "family")%>%
+  ungroup()
+#order avgs
+od <- two_hosts_p%>%
+  group_by(parasite_phylum, parasite_order)%>%
+  summarise(across(int_host_reso:def_host_reso, mean, na.rm = T), n = n())%>%
+  rename_with(~gsub("o$", "", .x))%>%
+  mutate(level = "order")%>%
+  ungroup()
+# gen_avgs
+sp <- two_hosts_p%>%
+  group_by(parasite_phylum, parasite_genus)%>%
+  summarise(across(int_host_resg:def_host_resg, mean, na.rm = T), n = n())%>%
+  rename_with(~gsub("g$", "", .x))%>%
+  mutate(level = "genus")%>%
+  ungroup()
+# spp level
+dc <- two_hosts_p%>%
+  select(Parasite.species, parasite_phylum, int_host_res_sp:def_host_res_sp)%>%
+  rename_with(~gsub("_sp$", "", .x))%>%
+  mutate(level = "species", n = 1)%>%
+  ungroup()%>%
+  bind_rows(., fd)%>%
+  bind_rows(., od)%>%
+  bind_rows(., sp)
+dc <- mutate(dc, level = fct_relevel(level, c("order", "family", "genus", "species")))
+```
+
+```{r}
+res_cn0 <- colnames(mod_comb_vcv3[,grepl(".units",colnames(mod_comb_vcv3))])
+res_cn1 <- colnames(mod_comb_vcv3[,grepl(".parasite_genus",colnames(mod_comb_vcv3))])
+res_cn2 <- colnames(mod_comb_vcv3fam[,grepl(".parasite_family",colnames(mod_comb_vcv3fam))])
+res_cn3 <- colnames(mod_comb_vcv3ord[,grepl(".parasite_order",colnames(mod_comb_vcv3ord))])
+res_cn4 <- colnames(mod_comb_vcv1[,grepl(".units",colnames(mod_comb_vcv1))])
+sx0 <- summary(posterior.cor(mod_comb_vcv3[,colnames(mod_comb_vcv3) %in% res_cn0]))
+sx1 <- summary(posterior.cor(mod_comb_vcv3[,colnames(mod_comb_vcv3) %in% res_cn1]))
+sx2 <- summary(posterior.cor(mod_comb_vcv3fam[,colnames(mod_comb_vcv3fam) %in% res_cn2]))
+sx3 <- summary(posterior.cor(mod_comb_vcv3ord[,colnames(mod_comb_vcv3ord) %in% res_cn3]))
+sx4 <- summary(posterior.cor(mod_comb_vcv1[,colnames(mod_comb_vcv1) %in% res_cn4]))
+cor_d <- data.frame(cor = c(res_cn0, res_cn1, res_cn2, res_cn3, res_cn4),
+                    level = rep(c("species", "genus", "family", "order", "overall"), 
+                                times = c(length(res_cn0), length(res_cn1), length(res_cn2),
+                                          length(res_cn3), length(res_cn4))),
+                    cor_lwr = c(sx0$quantiles[,1], sx1$quantiles[,1], sx2$quantiles[,1],
+                                sx3$quantiles[,1], sx4$quantiles[,1]),
+                    cor_fit = c(sx0$quantiles[,3], sx1$quantiles[,3], sx2$quantiles[,3], 
+                                sx3$quantiles[,3], sx4$quantiles[,3]),
+                    cor_upr = c(sx0$quantiles[,5], sx1$quantiles[,5], sx2$quantiles[,5],
+                                sx3$quantiles[,5], sx4$quantiles[,5]))
+cor_d <- cor_d%>%
+  mutate(txt = paste0(round(cor_fit, 2), " [", round(cor_lwr, 2), " to ",round(cor_upr, 2),"]"))
+
+cor_d <- mutate(cor_d, level = fct_relevel(level, c("order", "family", "genus", "species", "overall")))
+rm(res_cn0, res_cn1, res_cn2, res_cn3, res_cn4, sx0, sx1, sx2, sx3, sx4)
+```
+```{r}
+prop_var_per_group <- function(trait){
+  
+  var1 <-paste0("trait",trait,":","trait",trait, ".units")
+  res_var <- (mod_comb_vcv1[,var1])
+  res_var1 <- (mod_comb_vcv3ord[,var1])
+  res_var2 <- (mod_comb_vcv3fam[,var1])
+  res_var3 <- (mod_comb_vcv3[,var1])
+  x1 <- (res_var - res_var1)/res_var
+  x2 <- (res_var1 - res_var2)/res_var
+  x3 <- (res_var2 - res_var3)/res_var
+  x4 <- (res_var3/res_var)
+  sx1 <- summary(x1)
+  sx2 <- summary(x2)
+  sx3 <- summary(x3)
+  sx4 <- summary(x4)
+  
+  v_out <- data.frame(trait = trait,
+                      level = c("order", "family", "genus", "species"),
+                      var_lwr = c(sx1$quantiles[1], sx2$quantiles[1], sx3$quantiles[1],
+                                  sx4$quantiles[1]),
+                      var_fit = c(sx1$quantiles[3], sx2$quantiles[3], sx3$quantiles[3], 
+                                  sx4$quantiles[3]),
+                      var_upr = c(sx1$quantiles[5], sx2$quantiles[5], sx3$quantiles[5],
+                                  sx4$quantiles[5])
+                      )
+  return(v_out)
+}
+```
+```{r}
+var_df <- bind_rows(prop_var_per_group("int_host_mass"),
+                    prop_var_per_group("def_host_mass"))
+cor_d2 <- cor_d%>%
+  filter(grepl("traitint_host_mass:traitdef_host_mass", cor), level!="overall")%>%
+  mutate(trait = "correlation")%>%
+  rename(var_fit = cor_fit, var_lwr = cor_lwr, var_upr = cor_upr)%>%
+  select(-cor)
+var_df <- bind_rows(var_df, cor_d2)
+
+nnn <- two_hosts%>%
+  summarize(across(Parasite.species:parasite_order, n_distinct))
+nnn <- nnn%>%
+  rename(species = Parasite.species, genus = parasite_genus, family = parasite_family, order = parasite_order)%>%
+  pivot_longer(everything(), names_to = "level")
+var_df <- left_join(var_df, nnn)
+var_df <- var_df%>%
+  mutate(level_txt = paste0(level,"\n(",value,")"))%>%
+  mutate(level_txt = fct_reorder(level_txt, value),
+         trait = fct_relevel(trait, c("int_host_mass", "def_host_mass")))
+```
+
+First, we can plot how much variance in IH and DH host mass is explained by adding each taxonomic level. IH mass varies among families, whereas DH mass varies among and within genera.
+
+```{r}
+f2x <- ggplot(var_df%>%filter(trait!="correlation"),
+       aes(x = level_txt, y = var_fit, color = trait)) +
+  geom_pointrange(aes(ymin = var_lwr, ymax = var_upr),
+                  position = position_dodge(width = 0.4),
+                  size=0.4,
+                  shape=20
+                  ) +
+  labs(x = NULL, y = 'Prop. variance', 
+       color = NULL, shape = NULL) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.background = element_rect(color = "black"),
+        legend.position = c(0.5,0.85),
+        legend.text = element_text(size = 5),
+        legend.direction = "horizontal",
+        legend.margin = unit(c(0, 0, 0, 0), "cm")
+        ) +
+  scale_y_continuous(limits = c(0,1)) +
+  scale_color_brewer(palette = "Accent", labels = c("IH mass", "DH mass")) 
+  # scale_shape_manual(values = c(7,9), labels = c("IH mass", "DH mass"))
+f2x
+```
+
+```{r}
+f2y <- ggplot(var_df%>%filter(trait == "correlation"),
+       aes(x = as.numeric(level_txt), y = var_fit)) +
+  annotate("rect", 
+           xmin = 0,
+           xmax = 7,
+           ymin = cor_d%>%
+             filter(cor=="traitint_host_mass:traitdef_host_mass.units", level == "overall")%>%
+             .$cor_lwr,
+           ymax = cor_d%>%
+             filter(cor=="traitint_host_mass:traitdef_host_mass.units", level == "overall")%>%
+             .$cor_upr,
+           fill = "gray",
+           alpha = 0.2) +
+  geom_hline(yintercept = cor_d%>%
+               filter(cor=="traitint_host_mass:traitdef_host_mass.units", level == "overall")%>%
+               .$cor_fit,
+             linetype = "dotted") +
+  geom_pointrange(aes(ymin = var_lwr, ymax = var_upr),
+                  position = position_dodge(width = 0.33),
+                  size=0.5,
+                  shape=20) +
+  labs(x = NULL, y = 'Correlation', 
+       color = NULL, shape = NULL) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.background = element_rect(color = "black"),
+        legend.position = c(0.6,0.8),
+        legend.text = element_text(size = 8)
+        ) +
+  scale_x_continuous(breaks = c(1:4), 
+                     labels = levels(var_df$level_txt)) +
+  coord_cartesian(xlim = c(0.66,4.33))
+f2y
+```
+
+```{r}
+f2xx <- cowplot::plot_grid(f2x + 
+                             theme(axis.text.x = element_blank(),
+                                   plot.margin = unit(c(0, 0, 0, 0), "points")) +
+                             guides(color = guide_legend(override.aes = list(size = 0.2)),
+                                    shape = guide_legend(override.aes = list(size = 0.2))),
+                          f2y + theme(plot.margin = unit(c(0, 0, 0, 0), "points")),
+                          labels = c("(b)","(c)"),
+                          align="hv", ncol = 1)
+```
+
+Since we report some of the values from the previous two plots in the ms, here are the values at the level of orders:
+
+```{r}
+var_df%>%
+  filter(level == "order")%>%
+  select(-txt, -value, -level_txt)
+```
+
+families:
+
+```{r}
+var_df%>%
+  filter(level == "family")%>%
+  select(-txt, -value, -level_txt)
+```
+
+genera:
+
+```{r}
+var_df%>%
+  filter(level == "genus")%>%
+  select(-txt, -value, -level_txt)
+```
+
+and within genera:
+
+```{r}
+var_df%>%
+  filter(level == "species")%>%
+  select(-txt, -value, -level_txt)
+```
+
+```{r}
+# function to calculate CI ellipse
+ci_ellipse <- function(cm, meanx, meany){ # take in 2x2 cov matrix, return 95% CI ellipsoid
+  
+  eigVal  <- eigen(cm)$values
+  eigVec  <- eigen(cm)$vectors
+  eigScl  <- eigVec %*% diag(sqrt(eigVal))  # scale eigenvectors to length = square-root
+  angles <- seq(0, 2*pi, length.out = 300)
+  ellBase <- cbind(sqrt(eigVal[1])*cos(angles), sqrt(eigVal[2])*sin(angles)) # normal ellipse
+  xcrs <- which(ellBase[,1] == max(ellBase[,1]) | ellBase[,1] == min(ellBase[,1])) # id major axis
+  ycrs <- which(ellBase[,2] == max(ellBase[,2]) | ellBase[,2] == min(ellBase[,2])) # id minor axis
+  ellRot  <- eigVec %*% t(ellBase) # rotated ellipse
+  ellRot <- data.frame(t(ellRot))
+  ellRot <- cbind(angles, ellRot)
+  names(ellRot) <- c("angles", "x", "y")
+  ellRot <- mutate(ellRot, x = x + meanx, y = y + meany)
+  ellRot$axes[xcrs] <- "major"
+  ellRot$axes[ycrs] <- "minor"
+  
+  return(ellRot) # dataframe for ellipse
+}
+
+# function to extract cov matrixes from post dist
+post_cov_matrices_df <- function(mod1, trait1, trait2, cv_level1, num_ps){
+  
+  ps <- sample(1:length(mod1[,1]), size = num_ps) # random posterior samples
+  
+  # trait names for extracting cov matrix from post dist
+  v1x <- paste0("trait",trait1,":","trait",trait1,cv_level1)
+  v2x <- paste0("trait",trait2,":","trait",trait2,cv_level1)
+  cv12x <- paste0("trait",trait1,":","trait",trait2,cv_level1)
+  cv21x <- paste0("trait",trait2,":","trait",trait1,cv_level1)
+
+  # loop around to take sample
+  for(i in ps){
+    ell_i <- ci_ellipse(
+      cm = matrix(6 * (mod1[i, c(v1x, cv12x, cv21x, v2x)]), 2,2),
+      meanx = 0, #mod1$Sol[i, paste0("trait",trait1)]
+      meany = 0 #mod1$Sol[i, paste0("trait",trait2)]
+  )
+    ell_i$p_samp <- as.character(i)
+    if(i == ps[1]){
+      ell_many <- ell_i
+    } else {
+      ell_many <- bind_rows(ell_many, ell_i)
+    }
+  }
+  
+  return(ell_many)
+
+}
+
+post_cov_matrix_best <- function(mod1, trait1, trait2, cv_level1){
+  
+  # trait names for extracting cov matrix from post dist
+  v1x <- paste0("trait",trait1,":","trait",trait1,cv_level1)
+  v2x <- paste0("trait",trait2,":","trait",trait2,cv_level1)
+  cv12x <- paste0("trait",trait1,":","trait",trait2,cv_level1)
+  cv21x <- paste0("trait",trait2,":","trait",trait1,cv_level1)
+  
+  ell <- ci_ellipse(
+      cm = matrix(6 * posterior.mode(mod1[, c(v1x, cv12x, cv21x, v2x)]), 2,2),
+      meanx = 0, # mean at zero because of res
+      meany = 0 # mean at zero because of res
+  )
+
+  return(ell)
+}
+```
+
+```{r}
+pal <- RColorBrewer::brewer.pal(name="Dark2", n=8)
+# function to make taxonomic covariance plot
+tax_cov_plot <- function(trait1, trait2, label1, label2, corner){
+  corx <- paste0("trait",trait1,":","trait",trait2)
+  ell0 <- post_cov_matrix_best(mod_comb_vcv1, trait1, trait2, ".units")
+  ell1 <- post_cov_matrices_df(mod_comb_vcv3, trait1, trait2, ".parasite_genus", 10)
+  ell2 <- post_cov_matrices_df(mod_comb_vcv3fam, trait1, trait2, ".parasite_family", 10)
+  ell3 <- post_cov_matrices_df(mod_comb_vcv3ord, trait1, trait2, ".parasite_order", 10)
+  ell4 <- post_cov_matrices_df(mod_comb_vcv3, trait1, trait2, ".units", 10)
+  ell <- bind_rows(ell0%>%mutate(level = "overall", p_samp = "1"),
+                   ell1%>%mutate(level = "genus"),
+                   ell2%>%mutate(level = "family"),
+                   ell3%>%mutate(level = "order"),
+                   ell4%>%mutate(level = "species"))%>%
+    mutate(level = fct_relevel(level, c("order", "family", "genus", "species", "overall")))
+  
+  var1 <- paste0("trait",trait1,":","trait",trait1,".units")
+  res_var <- median(mod_comb_vcv1[,var1])
+  res_var1 <- median(mod_comb_vcv3ord[,var1])
+  res_var2 <- median(mod_comb_vcv3fam[,var1])
+  res_var3 <- median(mod_comb_vcv3[,var1])
+  x1 <- round(100*((res_var - res_var1)/res_var))
+  x2 <- round(100*((res_var1 - res_var2)/res_var))
+  x3 <- round(100*((res_var2 - res_var3)/res_var))
+  x4 <- round(100*(res_var3/res_var))
+  
+  var2 <- paste0("trait",trait2,":","trait",trait2,".units")
+  res_var <- median(mod_comb_vcv1[,var2])
+  res_var1 <- median(mod_comb_vcv3ord[,var2])
+  res_var2 <- median(mod_comb_vcv3fam[,var2])
+  res_var3 <- median(mod_comb_vcv3[,var2])
+  y1 <- round(100*((res_var - res_var1)/res_var))
+  y2 <- round(100*((res_var1 - res_var2)/res_var))
+  y3 <- round(100*((res_var2 - res_var3)/res_var))
+  y4 <- round(100*(res_var3/res_var))
+  
+  regs <- dc%>%
+    rename_with(function(x){"v1"}, starts_with(gsub(pattern = "_mass", "_res", trait1)))%>%
+    select(level, v1)%>%
+    group_by(level)%>%
+    summarise(across(is.double, list(min, max), na.rm = T))%>%
+    ungroup()%>%
+    mutate(slope = NA_real_)
+  var_x <- paste0("trait",trait1,":","trait",trait1)
+  regs$slope[which(regs$level=="order")] <- 
+    median(mod_comb_vcv3ord[,paste0(corx,".parasite_order")]/mod_comb_vcv3ord[,paste0(var_x,".parasite_order")])
+  regs$slope[which(regs$level=="family")] <- 
+    median(mod_comb_vcv3fam[,paste0(corx,".parasite_family")]/mod_comb_vcv3fam[,paste0(var_x,".parasite_family")])
+  regs$slope[which(regs$level=="genus")] <- 
+    median(mod_comb_vcv3[,paste0(corx,".parasite_genus")]/mod_comb_vcv3[,paste0(var_x,".parasite_genus")])
+  regs$slope[which(regs$level=="species")] <- 
+    median(mod_comb_vcv3[,paste0(corx,".units")]/mod_comb_vcv3[,paste0(var_x,".units")])
+  
+  regs <- mutate(regs, y1 = slope * v1_1, y2 = slope * v1_2)  
+
+  strip_labs <- c(
+  `order` = paste0("order", " (", x1, ", ", y1, "%)" ),
+  `family` = paste0("family", " (", x2, ", ", y2, "%)" ),
+  `genus` = paste0("genus", " (", x3, ", ", y3, "%)" ),
+  `species` = paste0("species", " (", x4, ", ", y4, "%)" )
+  )
+
+  # laby <- paste0(label2, " (", vx1, ", ", vx2, ", ", vx3, ", ", vx4,"%)")
+  
+  xx <- if_else(corner[1] == 0, min(ell0$x, na.rm = T), max(ell0$x, na.rm = T))
+  yy <- if_else(corner[2] == 0, min(ell0$y, na.rm = T), max(ell0$y, na.rm = T))
+  xjust <- if_else(corner[1] == 0, "left", "right")
+  
+  fa <- ggplot(dc%>%
+    rename_with(function(x){"v1"}, starts_with(gsub(pattern = "_mass", "_res", trait1)))%>%
+    rename_with(function(x){"v2"}, starts_with(gsub(pattern = "_mass", "_res", trait2))), 
+         aes(x = v1, y = v2, color = level)) +
+    geom_point(aes(shape = parasite_phylum, size = n),
+               alpha = 0.5) +
+    geom_hline(yintercept = 0, linetype = "dashed") + geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_path(data = filter(ell, level != "overall")%>%
+                arrange(level, p_samp, angles),
+                aes(x = x, y = y, group = paste(p_samp, level)),
+                alpha = 0.2, size = 1) +
+    geom_path(data = filter(ell, level == "overall")%>%select(-level)%>%
+                arrange(p_samp, angles),
+                aes(x = x, y = y, group = paste(p_samp)),
+                alpha = 1, size = 1, color = "black", linetype = "dashed") +
+    geom_segment(data = filter(regs, level != "observed"),
+                 aes(x = v1_1, xend = v1_2, y = y1, yend = y2),
+                 size = 1) +
+    geom_text(data = filter(cor_d, grepl(pattern = corx, cor), level != "overall")%>%
+                arrange(desc(level))%>%
+                mutate(x = xx,
+                       y = yy),
+              aes(label = txt, 
+                  x = x,
+                  y = y),
+              size = 3, hjust = xjust) +
+    scale_color_manual(values = pal[2:5]) +
+    scale_linetype_manual(values = c(rep("solid", times=3), "dashed")) +
+    coord_cartesian(xlim = c(min(ell0$x, na.rm = T), max(ell0$x, na.rm = T)), 
+                    ylim = c(min(ell0$y, na.rm = T), max(ell0$y, na.rm = T))) +
+    guides(size = F, shape = F, color = F, linetype = F) +
+    labs(x = label1, y = label2,
+         title = paste0("Species-level correlation = ", 
+                      filter(cor_d, grepl(corx, cor), level == "overall")$txt)) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title = element_text(size = 10)) +
+    facet_wrap(~level, nrow=1,
+               labeller = labeller(level = strip_labs))
+  
+  return(fa)
+}
+```
+
+Here are the taxonomic covariances. The points are conditional residuals, i.e. values after accounting for all higher-level taxonomic effects. The black line is the species-level, non-taxonomic covariance. The more that the points fill the black ellipse, the more variance attributed to that level. Genera differ in definitive host mass but not intermediate host mass, so there is no covariance at that level. Families differ at both levels, particularly in the kinds of intermediate hosts they infect. There is also covariance at the order level, but it is variable, because more variance is attributed to lower levels.
+
+```{r}
+fs1 <- tax_cov_plot("int_host_mass", "def_host_mass", "Residual intermediate host mass", "Residual definitive host mass", c(0,1))
+fs1
+```
+
+
+```{r}
+pal <- RColorBrewer::brewer.pal(name="Dark2", n=8)
+# function to make taxonomic covariance plot
+tax_cov_plot <- function(trait1, trait2, label1, label2, corner){
+  corx <- paste0("trait",trait1,":","trait",trait2)
+  ell0 <- post_cov_matrix_best(mod_comb_vcv1, trait1, trait2, ".units")
+  ell1 <- post_cov_matrices_df(mod_comb_vcv3, trait1, trait2, ".parasite_genus", 10)
+  ell2 <- post_cov_matrices_df(mod_comb_vcv3fam, trait1, trait2, ".parasite_family", 10)
+  ell3 <- post_cov_matrices_df(mod_comb_vcv3ord, trait1, trait2, ".parasite_order", 10)
+  ell4 <- post_cov_matrices_df(mod_comb_vcv3, trait1, trait2, ".units", 10)
+  ell <- bind_rows(ell0%>%mutate(level = "overall", p_samp = "1"),
+                   ell1%>%mutate(level = "genus"),
+                   ell2%>%mutate(level = "family"),
+                   ell3%>%mutate(level = "order"),
+                   ell4%>%mutate(level = "species"))%>%
+    mutate(level = fct_relevel(level, c("order", "family", "genus", "species", "overall")))
+  
+  var1 <- paste0("trait",trait1,":","trait",trait1,".units")
+  res_var <- median(mod_comb_vcv1[,var1])
+  res_var1 <- median(mod_comb_vcv3ord[,var1])
+  res_var2 <- median(mod_comb_vcv3fam[,var1])
+  res_var3 <- median(mod_comb_vcv3[,var1])
+  x1 <- round(100*((res_var - res_var1)/res_var))
+  x2 <- round(100*((res_var1 - res_var2)/res_var))
+  x3 <- round(100*((res_var2 - res_var3)/res_var))
+  x4 <- round(100*(res_var3/res_var))
+  
+  var2 <- paste0("trait",trait2,":","trait",trait2,".units")
+  res_var <- median(mod_comb_vcv1[,var2])
+  res_var1 <- median(mod_comb_vcv3ord[,var2])
+  res_var2 <- median(mod_comb_vcv3fam[,var2])
+  res_var3 <- median(mod_comb_vcv3[,var2])
+  y1 <- round(100*((res_var - res_var1)/res_var))
+  y2 <- round(100*((res_var1 - res_var2)/res_var))
+  y3 <- round(100*((res_var2 - res_var3)/res_var))
+  y4 <- round(100*(res_var3/res_var))
+  
+  regs <- dc%>%
+    rename_with(function(x){"v1"}, starts_with(gsub(pattern = "_mass", "_res", trait1)))%>%
+    select(level, v1)%>%
+    group_by(level)%>%
+    summarise(across(is.double, list(min, max), na.rm = T))%>%
+    ungroup()%>%
+    mutate(slope = NA_real_)
+  var_x <- paste0("trait",trait1,":","trait",trait1)
+  regs$slope[which(regs$level=="order")] <- 
+    median(mod_comb_vcv3ord[,paste0(corx,".parasite_order")]/mod_comb_vcv3ord[,paste0(var_x,".parasite_order")])
+  regs$slope[which(regs$level=="family")] <- 
+    median(mod_comb_vcv3fam[,paste0(corx,".parasite_family")]/mod_comb_vcv3fam[,paste0(var_x,".parasite_family")])
+  regs$slope[which(regs$level=="genus")] <- 
+    median(mod_comb_vcv3[,paste0(corx,".parasite_genus")]/mod_comb_vcv3[,paste0(var_x,".parasite_genus")])
+  regs$slope[which(regs$level=="species")] <- 
+    median(mod_comb_vcv3[,paste0(corx,".units")]/mod_comb_vcv3[,paste0(var_x,".units")])
+  
+  regs <- mutate(regs, y1 = slope * v1_1, y2 = slope * v1_2)  
+
+  strip_labs <- c(
+  `order` = paste0("order", " (", x1, ", ", y1, "%)" ),
+  `family` = paste0("family", " (", x2, ", ", y2, "%)" ),
+  `genus` = paste0("genus", " (", x3, ", ", y3, "%)" ),
+  `species` = paste0("species", " (", x4, ", ", y4, "%)" )
+  )
+
+  # laby <- paste0(label2, " (", vx1, ", ", vx2, ", ", vx3, ", ", vx4,"%)")
+  
+  xx <- if_else(corner[1] == 0, min(ell0$x, na.rm = T), max(ell0$x, na.rm = T))
+  yy <- if_else(corner[2] == 0, min(ell0$y, na.rm = T), max(ell0$y, na.rm = T))
+  xjust <- if_else(corner[1] == 0, "left", "right")
+  
+  fa <- ggplot(dc%>%
+    rename_with(function(x){"v1"}, starts_with(gsub(pattern = "_mass", "_res", trait1)))%>%
+    rename_with(function(x){"v2"}, starts_with(gsub(pattern = "_mass", "_res", trait2))), 
+         aes(x = exp(v1), y = exp(v2), color = level)) +
+    geom_point(aes(shape = parasite_phylum, size = n),
+               alpha = 0.5) +
+    geom_hline(yintercept = 1, linetype = "dashed") + 
+    geom_vline(xintercept = 1, linetype = "dashed") +
+    geom_path(data = filter(ell, level != "overall")%>%
+                arrange(level, p_samp, angles),
+                aes(x = exp(x), y = exp(y), group = paste(p_samp, level)),
+                alpha = 0.2, size = 1) +
+    geom_path(data = filter(ell, level == "overall")%>%select(-level)%>%
+                arrange(p_samp, angles),
+                aes(x = exp(x), y = exp(y), group = paste(p_samp)),
+                alpha = 1, size = 1, color = "black", linetype = "dashed") +
+    geom_segment(data = filter(regs, level != "observed"),
+                 aes(x = exp(v1_1), xend = exp(v1_2), y = exp(y1), yend = exp(y2)),
+                 size = 1) +
+    geom_text(data = filter(cor_d, grepl(pattern = corx, cor), level != "overall")%>%
+                arrange(desc(level))%>%
+                mutate(x = xx,
+                       y = yy),
+              aes(label = txt, 
+                  x = exp(x),
+                  y = exp(y)),
+              size = 3, hjust = xjust) +
+    scale_color_manual(values = pal[2:5]) +
+    scale_linetype_manual(values = c(rep("solid", times=3), "dashed")) +
+    scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+    scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+    coord_cartesian(xlim = exp(c(min(ell0$x, na.rm = T), max(ell0$x, na.rm = T))), 
+                    ylim = exp(c(min(ell0$y, na.rm = T), max(ell0$y, na.rm = T)))) +
+    guides(size = F, shape = F, color = F, linetype = F) +
+    labs(x = label1, y = label2,
+         title = paste0("Species-level correlation = ", 
+                      filter(cor_d, grepl(corx, cor), level == "overall")$txt)) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title = element_text(size = 10)) +
+    facet_wrap(~level, nrow=1,
+               labeller = labeller(level = strip_labs))
+  
+  return(fa)
+}
+```
+
+We can make the same plot but change the axes so that it expresses the residual values as fold-change from expectations, e.g. 10x bigger/smaller than expected given the order, family, etc.
+
+```{r}
+fs1x <- tax_cov_plot("int_host_mass", "def_host_mass", "Fold-change to expected IH mass", "Fold-change to expected DH mass", c(0,1))
+fs1x
+
+ggsave(fs1x, filename = "../../figs/figC2_imp.png", width = 6, height = 3)
+# ggsave(fs1x, filename = "../../figs/figC2.svg", width = 6, height = 3)
+```
+
+What orders and families are responsible for these correlations?
+
+```{r}
+mod_comb_sol3ord <- runjags::combine.mcmc(mcmc.list(lapply(chains3_ord, function(x) {x$Sol})))
+mod_comb_sol3fam <- runjags::combine.mcmc(mcmc.list(lapply(chains3_fam, function(x) {x$Sol})))
+```
+
+
+```{r}
+th_ord_typ <- two_hosts%>%
+  group_by(parasite_order)%>%
+  summarize(int_host_classes = list(sort(unique(int_host_class))))%>%
+  mutate(int_host_classes2 = lapply(int_host_classes, 
+                                    FUN = function(x){paste(unlist(x), collapse=', ')}))%>%
+  mutate(int_host_classes2 = unlist(int_host_classes2))%>%
+  select(-int_host_classes)
+
+sx1 <- mod_comb_sol3ord[,grepl(pattern = "traitint_host_mass.parasite_order", colnames(mod_comb_sol3ord))]
+sx <- summary(sx1)
+re_fams <- data.frame(parasite_order = row.names(sx$quantiles), 
+                      re_lwr = sx$quantiles[,1],
+                      re = sx$quantiles[,3],
+                      re_upr = sx$quantiles[,5])
+re_fams <- re_fams%>%
+  mutate(parasite_order = gsub(pattern = "traitint_host_mass.parasite_order.", "", parasite_order))
+row.names(re_fams) <- NULL
+re_fams <- left_join(re_fams, th_ord_typ)
+```
+Here are the orders with large intermediate hosts. It includes nematodes with diverse intermediate hosts (Ascaridida, Rhabditida) and cestodes with large amphipod or bivalve intermediate hosts (Amphilinidea, Rhinebothriidea). 
+
+```{r}
+re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)
+```
+
+Here are the orders with small intermediate hosts. It includes groups that mostly infect zooplankton as intermediate hosts.
+
+```{r}
+re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)
+```
+
+
+```{r}
+th_ord_typ <- two_hosts%>%
+  group_by(parasite_order)%>%
+  summarize(def_host_classes = list(sort(unique(def_host_class))))%>%
+  mutate(def_host_classes2 = lapply(def_host_classes, 
+                                    FUN = function(x){paste(unlist(x), collapse=', ')}))%>%
+  mutate(def_host_classes2 = unlist(def_host_classes2))%>%
+  select(-def_host_classes)
+
+sx2 <- mod_comb_sol3ord[,grepl(pattern = "traitdef_host_mass.parasite_order", colnames(mod_comb_sol3ord))]
+sx <- summary(sx2)
+re_fams <- data.frame(parasite_order = row.names(sx$quantiles), 
+                      re_lwr = sx$quantiles[,1],
+                      re = sx$quantiles[,3],
+                      re_upr = sx$quantiles[,5])
+re_fams <- re_fams%>%
+  mutate(parasite_order = gsub(pattern = "traitdef_host_mass.parasite_order.", "", parasite_order))
+row.names(re_fams) <- NULL
+re_fams <- left_join(re_fams, th_ord_typ)
+```
+
+Here are orders from large definitive hosts.
+
+```{r}
+re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)
+```
+
+And here the orders from small definitive hosts (mostly fish).
+
+```{r}
+re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)
+```
+
+
+
+```{r}
+sx <- 
+  sx1/apply(sx1, MARGIN = 1, sd) +
+  sx2/apply(sx1, MARGIN = 1, sd)
+  
+sx <- sx/2
+sx <- summary(sx)
+
+re_fams <- data.frame(parasite_order = row.names(sx$quantiles), 
+                        t1 = apply(sx1,MARGIN = 2, median), 
+                        t2 = apply(sx2,MARGIN = 2, median),
+                        re_lwr = sx$quantiles[,1],
+                        re = sx$quantiles[,3],
+                        re_upr = sx$quantiles[,5])
+re_fams <- re_fams%>%
+  mutate(parasite_order = gsub(pattern = "traitint_host_mass.parasite_order.", "", parasite_order))
+row.names(re_fams) <- NULL
+```
+
+The orders characterized by large intermediate hosts also were characterized by large definitive hosts.
+
+```{r}
+ggplot(re_fams, aes(t1, t2)) +
+  geom_label(aes(label=parasite_order), alpha = 0.2) +
+  labs(x = "Residual IH mass", y = "Residual DH mass") +
+  theme(panel.grid.minor = element_blank())
+```
+
+We can standardize the random effects and then average them. Positive values indicate groups that have large hosts at both life stages.
+
+```{r}
+re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)
+```
+
+And here are the groups with small hosts at both stages.
+```{r}
+re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)
+```
+
+
+
+
+
+
+
+
+Host masses varied more among families than orders, so let's now look at the families with large hosts.
+
+```{r}
+th_fam_typ <- two_hosts%>%
+  group_by(parasite_family)%>%
+  summarize(int_host_classes = list(sort(unique(int_host_class))))%>%
+  mutate(int_host_classes2 = lapply(int_host_classes, 
+                                    FUN = function(x){paste(unlist(x), collapse=', ')}))%>%
+  mutate(int_host_classes2 = unlist(int_host_classes2))%>%
+  select(-int_host_classes)
+
+sx1 <- mod_comb_sol3fam[,grepl(pattern = "traitint_host_mass.parasite_family", colnames(mod_comb_sol3fam))]
+sx <- summary(sx1)
+re_fams <- data.frame(parasite_family = row.names(sx$quantiles), 
+                      re_lwr = sx$quantiles[,1],
+                      re = sx$quantiles[,3],
+                      re_upr = sx$quantiles[,5])
+re_fams <- re_fams%>%
+  mutate(parasite_family = gsub(pattern = "traitint_host_mass.parasite_family.", "", parasite_family))
+row.names(re_fams) <- NULL
+re_fams <- left_join(re_fams, th_fam_typ)
+```
+
+Here are the families with large intermediate hosts. It includes taeniid cestodes and numerous nematodes that infect vertebrates as intermediate hosts. 
+
+```{r}
+re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)
+```
+
+Here are the families with small intermediate hosts. It includes groups that mostly infect zooplankton as intermediate hosts.
+
+```{r}
+re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)
+```
+
+
+```{r}
+th_fam_typ <- two_hosts%>%
+  group_by(parasite_family)%>%
+  summarize(def_host_classes = list(sort(unique(def_host_class))))%>%
+  mutate(def_host_classes2 = lapply(def_host_classes, 
+                                    FUN = function(x){paste(unlist(x), collapse=', ')}))%>%
+  mutate(def_host_classes2 = unlist(def_host_classes2))%>%
+  select(-def_host_classes)
+
+sx2 <- mod_comb_sol3fam[,grepl(pattern = "traitdef_host_mass.parasite_family", colnames(mod_comb_sol3fam))]
+sx <- summary(sx2)
+re_fams <- data.frame(parasite_family = row.names(sx$quantiles), 
+                      re_lwr = sx$quantiles[,1],
+                      re = sx$quantiles[,3],
+                      re_upr = sx$quantiles[,5])
+re_fams <- re_fams%>%
+  mutate(parasite_family = gsub(pattern = "traitdef_host_mass.parasite_family.", "", parasite_family))
+row.names(re_fams) <- NULL
+re_fams <- left_join(re_fams, th_fam_typ)
+```
+
+Here are families with large definitive hosts.
+
+```{r}
+re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)
+```
+
+
+And here the families from small definitive hosts, many from fish or rodents.
+
+```{r}
+re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)
+```
+
+
+```{r}
+sx <- 
+  sx1/apply(sx1, MARGIN = 1, sd) +
+  sx2/apply(sx1, MARGIN = 1, sd)
+  
+sx <- sx/2
+sx <- summary(sx)
+
+re_fams <- data.frame(parasite_family = row.names(sx$quantiles), 
+                        t1 = apply(sx1,MARGIN = 2, median), 
+                        t2 = apply(sx2,MARGIN = 2, median),
+                        re_lwr = sx$quantiles[,1],
+                        re = sx$quantiles[,3],
+                        re_upr = sx$quantiles[,5])
+re_fams <- re_fams%>%
+  mutate(parasite_family = gsub(pattern = "traitint_host_mass.parasite_family.", "", parasite_family))
+row.names(re_fams) <- NULL
+```
+
+The families characterized by large intermediate hosts often had large definitive hosts.
+
+```{r}
+fams_plot <- c(re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)%>%
+  .$parasite_family,
+  re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)%>%
+  .$parasite_family)
+
+ggplot(re_fams, aes(t1, t2)) +
+  geom_point() +
+  geom_label(data = re_fams%>%
+               filter(parasite_family %in% fams_plot),
+             aes(label=parasite_family), alpha = 0.2) +
+  labs(x = "Residual IH mass", y = "Residual DH mass") +
+  theme(panel.grid.minor = element_blank())
+```
+
+We can standardize the random effects and then average them. Positive values indicate groups that have large hosts at both life stages.
+
+```{r}
+re_fams%>%
+  arrange(desc(re_lwr))%>%
+  slice_head(n=10)
+```
+
+And here are the families with small hosts at both stages.
+```{r}
+re_fams%>%
+  arrange(re_upr)%>%
+  slice_head(n=10)
+```
+
+
+# Intermediate host mass and definitive host endothermy
+
+
+[Elsewhere](life_history_stragies_rg.md) we found that endothermy also facilitated parasite growth. So are worms with larger intermediate hosts also more likely to infect endotherms? To test this, let's fit a logistic regression with definitive host endothermy as response and intermediate host mass as predictor. We do not include worm phylogeny because it causes problems with parameter estimation due to complete separation (e.g. worms of a given family or order always infect endotherms).
+
+```{r}
+prior_tax_lr <- list(R = list(V = 1, fix = 1))
+
+                  # G = list(
+                  #   G1 = list(V = 1, n = 0.002)
+                    # G2 = list(V = 1, n = 0.002)
+                    # G3 = list(V = 1, n = 0.002),
+                    # G4 = list(V = 1, n = 0.002),
+                    # G5 = list(V = 1, n = 0.002)
+                  #   )
+                  # )
+```
+
+
+```{r}
+chains_lr1 = list()
+chains_lr2 = list()
+
+bi <- 500 # burnin iterations
+
+for(i in 1:100){
+
+  iname <- ifelse(i < 10, paste0('00',i), 
+                  ifelse(i < 100, paste0('0',i),i))
+  fname_p <- paste0('../../data/imputed_stage_level_tables/stage_level_imputed',iname,'.csv')
+  dat_imp <- read.csv(file = fname_p, header = T)
+  
+  two_hosts_imp <- wrangle_data(dat_imp)
+    
+  # no cov IH, DH
+  chains_lr1[[i]] <- MCMCglmm(endo_def ~ int_host_mass,
+                nitt = (250*10)+bi, thin = 250, burnin = bi,
+                prior = prior_tax_lr,
+                data = as.data.frame(two_hosts_imp),
+                family = "categorical",
+                pr=F,
+                verbose = F)
+  chains_lr2[[i]] <- MCMCglmm(endo_def ~ int_host_mass*parasite_phylum,
+                nitt = (250*10)+bi, thin = 250, burnin = bi,
+                prior = prior_tax_lr,
+                data = as.data.frame(two_hosts_imp),
+                family = "categorical",
+                pr=F,
+                verbose = F)
+  print(paste('logistic regression, imputation', i, 'finished'))
+}
+```
+
+```{r}
+mod_comb_sol_lr1 <- runjags::combine.mcmc(mcmc.list(lapply(chains_lr1, function(x) {x$Sol})))
+mod_comb_sol_lr2 <- runjags::combine.mcmc(mcmc.list(lapply(chains_lr2, function(x) {x$Sol})))
+```
+
+The parameter for intermediate host mass is significantly positive, suggesting larger intermediate hosts are more likely to be transmitted to endotherm definitive hosts.
+
+```{r}
+summary(mod_comb_sol_lr1)
+```
+
+Here is the predicted percent increase in the odds of infecting an endotherm with a doubling of intermediate host mass.
+
+```{r}
+summary( exp(mod_comb_sol_lr1[,"int_host_mass"] * log(2)) - 1) # beta x "log diff corresponding to doubling of size"
+```
+
+However this effect is dependent on parasite group; adding a parasite group by intermediate host mass interaction was a significant improvement.
+
+```{r}
+mod_comb_dev_lr1 <- runjags::combine.mcmc(mcmc.list(lapply(chains_lr1, name_dev_var)))
+mod_comb_dev_lr2 <- runjags::combine.mcmc(mcmc.list(lapply(chains_lr2, name_dev_var)))
+```
+
+```{r}
+plot(mcmc.list(mod_comb_dev_lr1, mod_comb_dev_lr2), density = F)
+```
+In particular, nematodes and especially cestodes are less likely to infect an endotherm next host when their intermediate host is large.
+
+```{r}
+summary(mod_comb_sol_lr2)
+# plot(mod_comb_sol_lr2)
+```
+
+Here is the predicted percent increase in the odds of infecting an endotherm with a doubling of worm size for Acanthocephalans.
+
+```{r}
+summary( exp(mod_comb_sol_lr2[,"int_host_mass"] * log(2)) - 1) 
+```
+
+for nematodes,
+
+```{r}
+summary( exp( (mod_comb_sol_lr2[,"int_host_mass"] + mod_comb_sol_lr2[,"int_host_mass:parasite_phylumNematoda"]) * log(2)) - 1) 
+```
+
+and for cestodes.
+
+```{r}
+summary( exp( (mod_comb_sol_lr2[,"int_host_mass"] + mod_comb_sol_lr2[,"int_host_mass:parasite_phylumCestoda"]) * log(2)) - 1) 
+```
+
+These effect sizes were comparable, but a bit lower when estimated with `glm` instead of `MCMCglmm`.
+
+```{r}
+lrx <- glm(endo_def ~ int_host_mass*parasite_phylum, data = two_hosts%>%filter(), family = "binomial")
+
+sx <- summary(lrx)
+se_slope <- sx$coefficients["int_host_mass","Std. Error"]
+
+paste0("Acanths, increase in endotherm odds with doubling IH mass: ",
+      round(exp(lrx$coefficients["int_host_mass"] * log(2))-1, 3),
+      " [",
+      round( exp( (lrx$coefficients["int_host_mass"] - 1.96*se_slope) * log(2))-1, 3),
+      " - ",
+      round( exp( (lrx$coefficients["int_host_mass"] + 1.96*se_slope) * log(2))-1, 3),
+      "]"
+      )
+```
+```{r}
+lrx <- glm(endo_def ~ int_host_mass*parasite_phylum, 
+           data = two_hosts%>%
+             mutate(parasite_phylum = fct_relevel(parasite_phylum,
+                                                  c("Cestoda", "Acanthocephala", "Nematoda"))
+                    ),
+           family = "binomial")
+
+sx <- summary(lrx)
+se_slope <- sx$coefficients["int_host_mass","Std. Error"]
+
+paste0("Cestodes, increase in endotherm odds with doubling IH mass: ",
+      round(exp(lrx$coefficients["int_host_mass"] * log(2))-1, 3),
+      " [",
+      round( exp( (lrx$coefficients["int_host_mass"] - 1.96*se_slope) * log(2))-1, 3),
+      " - ",
+      round( exp( (lrx$coefficients["int_host_mass"] + 1.96*se_slope) * log(2))-1, 3),
+      "]"
+      )
+```
+
+```{r}
+lrx <- glm(endo_def ~ int_host_mass*parasite_phylum, 
+           data = two_hosts%>%
+             mutate(parasite_phylum = fct_relevel(parasite_phylum,
+                                                  c("Nematoda", "Acanthocephala", "Cestoda"))
+                    ),
+           family = "binomial")
+
+sx <- summary(lrx)
+se_slope <- sx$coefficients["int_host_mass","Std. Error"]
+
+paste0("Nematodes, increase in endotherm odds with doubling IH mass: ",
+      round(exp(lrx$coefficients["int_host_mass"] * log(2))-1, 3),
+      " [",
+      round( exp( (lrx$coefficients["int_host_mass"] - 1.96*se_slope) * log(2))-1, 3),
+      " - ",
+      round( exp( (lrx$coefficients["int_host_mass"] + 1.96*se_slope) * log(2))-1, 3),
+      "]"
+      )
+```
+
+Let's plot the pattern. Here are the logistic regressions with the data put in 10 bins
+
+```{r}
+ihm = seq(min(two_hosts$int_host_mass,na.rm=T), 
+          max(two_hosts$int_host_mass,na.rm=T),
+          length.out = 50)
+
+nd <- rbind(data.frame(int_host_mass = ihm, parasite_phylum = "Acanthocephala"),
+            data.frame(int_host_mass = ihm, parasite_phylum = "Cestoda"),
+            data.frame(int_host_mass = ihm, parasite_phylum = "Nematoda"))
+nd$pred <- (predict(lrx, newdata = nd, type="response")) # if needed get CIs from MCMC model
+```
+
+The pattern is clearest for acanthocephalans. The trend in weak in cestodes because they generally infect endotherms.
+```{r}
+two_hosts_cut <- two_hosts%>%
+  group_by(parasite_phylum)%>%
+  mutate(ihm_cat = cut_interval(x = int_host_mass, n = 10))
+
+get_midpoint <- function(cut_label) {
+  mean(as.numeric(unlist(strsplit(gsub("\\(|\\)|\\[|\\]", "", as.character(cut_label)), ","))))
+}
+
+for(i in seq_along(two_hosts_cut$Parasite.species)){
+  mdp_i <- get_midpoint(two_hosts_cut$ihm_cat[i])
+  if(i == 1){
+    mdps <- mdp_i
+  } else {
+    mdps <- c(mdps, mdp_i)
+  }
+  
+}
+
+two_hosts_cut <- ungroup(two_hosts_cut)%>%
+  mutate(ih_bin_mdpt = mdps)
+  
+
+two_hosts_cut <- two_hosts_cut%>%
+  group_by(ihm_cat, parasite_phylum)%>%
+  summarise(n = n(), ih_bin_mdpt = mean(ih_bin_mdpt), prop_endo = sum(endo_def)/n())
+
+
+ggplot(two_hosts_cut, aes(x = exp(ih_bin_mdpt), y = prop_endo, color = parasite_phylum)) +
+  geom_point(aes(size = n), alpha = 0.5) +
+  geom_line(data = nd, aes(x = exp(int_host_mass), y = pred)) +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  labs(size = "num spp", 
+       x = "Intermediate host mass", y = "Proportion endotherm definitive host", 
+       color = NULL) +
+  theme(panel.grid.minor = element_blank())
+```
+Alternatively, and perhaps more simply, we can just separate species with and without an endotherm definitive host. 
+```{r}
+two_hosts <- two_hosts%>%
+                mutate(missing = if_else(missing_bm == "missing", "zz", parasite_phylum))
+```
+```{r}
+f2bb <- ggplot(two_hosts,
+               aes(y = exp(int_host_mass), 
+                   x = parasite_phylum,
+                   color = factor(endo_def))) +
+  geom_boxplot(outlier.colour = NA) +
+  geom_jitter(data = filter(two_hosts, !is.na(int_host_mass_ni)),
+              shape = 4,
+              position = position_jitterdodge(jitter.width = 0.4),
+              alpha = 0.3,
+              size = 1) +
+  geom_jitter(data = filter(two_hosts, !is.na(int_host_mass_ni)),
+              aes(shape = parasite_phylum),
+              position = position_jitterdodge(jitter.width = 0.4),
+              alpha = 0.3,
+              size = 1) +
+  scale_color_brewer(palette = "Set1", direction = -1) +
+  scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  coord_flip() +
+  labs(y = "Intermediate host mass (g)", x = NULL) +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major.y = element_blank() 
+        ) + 
+  guides(color = F, shape = F)
+f2bb
+```
+
+```{r}
+# make figure 2
+f2_out <- cowplot::plot_grid(f2a, 
+                             f2xx, 
+                             f2bb + theme(axis.text.y = element_text(size = 7)),
+                             rel_widths = c(1,0.8,1),
+                             labels = c("(a)","", "(d)"),
+                             nrow = 1)
+ggsave(f2_out, filename = "../../figs/fig2_imp.png", width = 7.5, height = 3)
+ggsave(f2_out, filename = "../../figs/fig2_imp.svg", width = 7.5, height = 3)
+# adjust legend in b, move b/c labels
+```
+
+
+```{r}
+# top_row <- cowplot::plot_grid(f2a, f2bb, align = "h", nrow = 1,
+#                           labels = c("(a)", "(b)"))
+# 
+# f2x <- cowplot::plot_grid(top_row, fs1 + labs(title = NULL), 
+#                    align = "hv",
+#                    ncol = 1,
+#                    # rel_widths = c(0.5,0.5,1),
+#                    labels = c("", "(c)"))
+# ggsave(f2x, filename = "../figs/fig2_new.png", width = 6, height = 6)
+# ggsave(f2x, filename = "../figs/fig2_new.svg", width = 6, height = 6)
+```
+
+# Conclusions
+
+Parasite species with two-host life cycles infect a wider range of intermediate hosts than definitive hosts (sizes). Also, species that infect larger intermediate hosts tend to infect larger definitive hosts, though the spread of the data indicates that species with small intermediate hosts infect both large and small hosts. This correlation arises because families tend to infect different sized intermediate hosts, suggestive of niche conservatism.
+
+```{r}
+save.image(file = "env_decoupling_imp.RData")
+```
+
