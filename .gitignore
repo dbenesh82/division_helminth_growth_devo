@@ -6,3 +6,6 @@
 *.svg
 *.html
 ms_files/*
+figs/01draft/*
+figs/02draft/*
+figs/03draft/*

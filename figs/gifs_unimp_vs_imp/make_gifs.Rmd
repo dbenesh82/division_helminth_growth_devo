@@ -1,0 +1,85 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(magick)
+```
+
+```{r}
+make_gif_two_pics <- function(pic1, pic2, fname){
+  # read images
+  f1i <- image_read(pic1)
+  f1u <- image_read(pic2)
+  # animate
+  f1g <- image_resize(c(f1i, f1u), '1000') %>%
+    image_animate(fps = 1, optimize = TRUE)
+  # write gif
+  image_write(f1g, fname)
+  rm(f1i, f1u, f1g)
+}
+```
+
+
+```{r}
+make_gif_two_pics("../imputed/fig2_imp_edit.png", "../unimputed/fig2_unimp_edit.png", fname = "fig2.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/fig3_imp_edit.png", "../unimputed/fig3_unimp_edit.png", fname = "fig3.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/fig4_imp_edit.png", "../unimputed/fig4_unimp_edit.png", fname = "fig4.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/fig5_imp_edit.png", "../unimputed/fig5_unimp_edit.png", fname = "fig5.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/fig6_imp_edit.png", "../unimputed/fig6_unimp_edit.png", fname = "fig6.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figB1_imp_edit.png", "../unimputed/figB1_unimp.png", fname = "figB1.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figB2_imp_edit.png", "../unimputed/figB2_unimp_edit.png", fname = "figB2.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figB3_imp.png", "../unimputed/figB3_unimp.png", fname = "figB3.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figB4_size_age_plot_imp.png", "../unimputed/figB4_size_age_plot.png", fname = "figB4.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figC2_imp.png", "../unimputed/figC2_unimp.png", fname = "figC2.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figC3_imp_edit.png", "../unimputed/figC3_unimp_edit.png", fname = "figC3.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figC4_within_imp.png", "../unimputed/figC4_within_unimp.png", fname = "figC4.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figC5_across_imp_edit.png", "../unimputed/figC5_across_unimp_edit.png", fname = "figC5.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figC6_across_imp_edit.png", "../unimputed/figC6_across_unimp_edit.png", fname = "figC6.gif")
+```
+
+```{r}
+make_gif_two_pics("../imputed/figC7_imp.png", "../unimputed/figC7_unimp.png", fname = "figC7.gif")
+```
+
+
