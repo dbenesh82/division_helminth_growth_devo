@@ -37,7 +37,7 @@ f1a <- ggplot(dp, aes(age, size)) +
   scale_x_continuous(breaks = c(0, dp$age[2], dp$age[3]), 
                      labels = c("0", "Age at\ninfectivity", "Age at\nmaturity")) +
   scale_y_continuous(breaks = c(0, dp$size[2], dp$size[3]), 
-                     labels = c("Propagule\nsize", "Size at\ninfectivity", "Size at\nmaturity")) +
+                     labels = c("Propagule\nsize", "Larval size\nat infectivity", "Adult size\nat maturity")) +
   labs(x = "Age", y = "Body size") +
   # dotted lines from axes
   annotate("segment",
@@ -157,42 +157,42 @@ f1b1 <- ggplot(dp_dh, aes(age, size)) +
   #          arrow = arrow(ends = "last", angle = 20, type = "open")
   #          ) +
   annotate("segment", # for low mort/fast grow
-           y = 4,
+           y = 3.75,
            yend = 4.9,
-           x = 2.5,
+           x = 2.3,
            xend = 3.4,
            arrow = arrow(ends = "last", angle = 20, type = "open", length = unit(0.1, "inches") ),
            ) +
   annotate("segment", # for low mort
-           y = 3,
+           y = 2.75,
            yend = 4.3,
-           x = 4.5,
+           x = 4.3,
            xend = 4.5,
            arrow = arrow(ends = "last", angle = 20, type = "open", length = unit(0.1, "inches") ),
            ) +
   annotate("label",
            label = "Better DH",
-           y = max(dp_dh$size), 
-           x = min(dp_dh$age), 
+           y = 0, 
+           x = max(dp_dh$age), 
            color = pal2[1],
-           hjust = 0, vjust = 1
+           hjust = 1, vjust = 0
            ) +
   annotate("text",
            label = "Faster growth\nLower mortality",
-           y = 4, 
-           x = 2.5, 
+           y = 3.8, 
+           x = 2.25, 
            color = pal2[1],
            hjust = 1, 
            # vjust = 0,
-           size = 2
+           size = 3
            ) +
   annotate("text",
-           label = "Lower mortality",
-           y = 3, 
+           label = "Lower\nmortality",
+           y = 2.75, 
            x = 4.5, 
            color = pal2[1],
            hjust = 1, vjust = 1,
-           size = 2
+           size = 3
            ) +
   guides(shape = F, linetype = F, color = F)
 f1b1
@@ -247,14 +247,14 @@ f1b2 <- ggplot(dp_dh, aes(age, size)) +
   #          # color = pal[6]
   #          ) +
   annotate("segment",
-           y = 2.5,
-           yend = 2.5,
-           x = 1,
-           xend = 1.4,
+           y = 3.2,
+           yend = 2.6,
+           x = 1.5,
+           xend = 1.5,
            arrow = arrow(ends = "last", angle = 20, type = "open", length = unit(0.1, "inches") ),
            ) +
   annotate("segment",
-           y = 2,
+           y = 1.7,
            yend = 2.4,
            x = 2.6,
            xend = 2.6,
@@ -262,27 +262,27 @@ f1b2 <- ggplot(dp_dh, aes(age, size)) +
            ) +
   annotate("label",
            label = "Better IH",
-           y = max(dp_dh$size), 
-           x = min(dp_dh$age), 
+           x = max(dp_dh$age), 
+           y = 0,
            color = pal2[2],
-           hjust = 0, vjust = 1
+           hjust = 1, vjust = 0
            ) +
   annotate("text",
            label = "Faster growth\nLower mortality",
-           y = 2.5, 
-           x = 1, 
+           y = 3.55, 
+           x = 2, 
            color = pal2[2],
            hjust = 1, 
            # vjust = 0,
-           size = 2
+           size = 3
            ) +
   annotate("text",
            label = "Lower mortality",
-           y = 2, 
-           x = 2.5, 
+           y = 1.7, 
+           x = 2.1, 
            color = pal2[2],
            hjust = 0, vjust = 1,
-           size = 2
+           size = 3
            ) +
   guides(shape = F, linetype = F, color = F)
 f1b2
@@ -392,16 +392,16 @@ f1b4 <- f1b4 +
            label = "Tradeoff",
            y = 2.25,
            x = 4.5,
-           size = 3,
+           size = 3.3,
            hjust = 1,
            color = pal[1]
            ) +
   annotate("label",
-           label = "Slower/less DH growth",
-           y = 3,
+           label = "Less/slower\nDH growth",
+           y = 3.1,
            x = 4.5,
            color = pal[1],
-           size = 2,
+           size = 2.5,
            hjust = 1
            ) +
   # annotate("label",
@@ -417,14 +417,14 @@ f1b4 <- f1b4 +
            x = 1.25,
            color = pal[2],
            angle = 90,
-           size = 3,
+           size = 3.3,
            hjust = 1
            ) +
   annotate("label",
-           label = "Faster/more DH growth",
-           y = 4.75,
+           label = "More/faster\nDH growth",
+           y = 4.8,
            x = 1.5,
-           size = 2,
+           size = 2.5,
            color = pal[2],
            hjust = 0
            ) +
@@ -470,26 +470,28 @@ library(cowplot)
 
 ```{r}
 # wide fig
-f1ax <- plot_grid(NULL,f1a,NULL,
+f1ax <- plot_grid(NULL, 
+                  f1a + theme(axis.title = element_blank()),
+                  NULL,
                  rel_widths = c(0.75,4,1),
                  nrow = 1, 
-                 labels = c("", "(a)", ""))
+                 labels = c("", "A", ""))
 
 f1b <- plot_grid(f1b2,f1b1,f1b4, 
                  align = "hv",
-                 labels = c("(b)", "(c)", "(d)"),
+                 labels = c("B", "C", "D"),
                  nrow = 1)
 ```
 
 ```{r}
 f1 <- plot_grid(f1ax, f1b, 
-                rel_heights = c(1.2, 1),
+                rel_heights = c(1.1, 1),
                 ncol = 1)
 ```
 ```{r}
-ggsave(f1, filename = "../figs/fig1xx.png", width = 8, height = 6)
+ggsave(f1, filename = "../figs/fig1X.png", width = 160, height = 120, units = "mm")
+ggsave(f1, filename = "../figs/fig1X.svg", width = 160, height = 120, units = "mm")
 ```
-
 
 ```{r}
 # ggsave(f1, filename = "../figs/fig1x.png", width = 8, height = 12)

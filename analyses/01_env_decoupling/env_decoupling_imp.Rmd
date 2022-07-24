@@ -569,7 +569,7 @@ f2a <- ggplot(two_hosts%>%
   geom_hline(yintercept = exp(posterior.mode(mod_comb_sol1[,"traitdef_host_mass"])),
              linetype = "dotted") +
   geom_point(aes(shape = missing),
-             alpha = 0.33, size = 1) +
+             alpha = 0.33, size = 0.5) +
   # geom_path(data = arrange(ell_many,p_samp,t),
   #           aes(x = exp(x), y = exp(y), group = p_samp),
   #           color = "black",
@@ -1183,7 +1183,7 @@ f2xx <- cowplot::plot_grid(f2x +
                              guides(color = guide_legend(override.aes = list(size = 0.2)),
                                     shape = guide_legend(override.aes = list(size = 0.2))),
                           f2y + theme(plot.margin = unit(c(0, 0, 0, 0), "points")),
-                          labels = c("(b)","(c)"),
+                          labels = c("B","C"),
                           align="hv", ncol = 1)
 ```
 
@@ -2031,14 +2031,14 @@ f2bb <- ggplot(two_hosts,
   geom_boxplot(outlier.colour = NA) +
   geom_jitter(data = filter(two_hosts, !is.na(int_host_mass_ni)),
               shape = 4,
-              position = position_jitterdodge(jitter.width = 0.4),
+              position = position_jitterdodge(jitter.width = 0.45),
               alpha = 0.3,
-              size = 1) +
+              size = 0.5) +
   geom_jitter(data = filter(two_hosts, !is.na(int_host_mass_ni)),
               aes(shape = parasite_phylum),
-              position = position_jitterdodge(jitter.width = 0.4),
+              position = position_jitterdodge(jitter.width = 0.45),
               alpha = 0.3,
-              size = 1) +
+              size = 0.5) +
   scale_color_brewer(palette = "Set1", direction = -1) +
   scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   coord_flip() +
@@ -2056,9 +2056,9 @@ f2_out <- cowplot::plot_grid(f2a,
                              f2xx, 
                              f2bb + theme(axis.text.y = element_text(size = 7)),
                              rel_widths = c(1,0.8,1),
-                             labels = c("(a)","", "(d)"),
+                             labels = c("A","", "D"),
                              nrow = 1)
-ggsave(f2_out, filename = "../../figs/fig2_imp.png", width = 7.5, height = 3)
+# ggsave(f2_out, filename = "../../figs/fig2_imp.png", width = 7.5, height = 3)
 ggsave(f2_out, filename = "../../figs/fig2_imp.svg", width = 7.5, height = 3)
 # adjust legend in b, move b/c labels
 ```

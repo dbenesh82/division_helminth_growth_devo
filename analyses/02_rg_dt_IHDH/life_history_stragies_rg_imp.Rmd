@@ -2094,6 +2094,7 @@ fa <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_rg_ih == "yes", "zz", parasite_phylum)),
              aes(x = exp(int_host_mass), y = exp(rg_int_host), color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes IH"),
               aes(fill = factor(endo_def),
@@ -2117,19 +2118,20 @@ fa <- ggplot(two_hosts%>%
   theme(panel.grid.minor = element_blank())
 fb <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_dd_ih == "yes", "zz", parasite_phylum)),
-             aes(x = exp(int_host_mass), y = exp(dd_int_host), color = factor(endo_def))) +
+             aes(x = exp(int_host_mass), y = exp(dd_int_host)/15, color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes IH"),
               aes(fill = factor(endo_def),
                   x = exp(int_host_mass_c + mean(two_hosts$int_host_mass)),
-                  ymin = exp(dd_int_pred.lwr), ymax = exp(dd_int_pred.upr)),
+                  ymin = exp(dd_int_pred.lwr)/15, ymax = exp(dd_int_pred.upr)/15),
               color = NA,
               alpha = 0.2) +
   geom_line(data = filter(p, pred == "yes IH"),
             aes(color = factor(endo_def),
                 x = exp(int_host_mass_c + mean(two_hosts$int_host_mass)),
-                y = exp(dd_int_pred.fit)),
+                y = exp(dd_int_pred.fit)/15),
             linetype = "dashed") +
   guides(color = F, fill = F, shape = F) +
   scale_color_brewer(palette = "Set1", direction = -1, labels = c("Ecto next host", "Endo next host")) +
@@ -2137,13 +2139,14 @@ fb <- ggplot(two_hosts%>%
   scale_y_log10() +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   scale_shape_manual(values = c(16,17,15,4)) +
-  labs(color = NULL, x = "Intermediate host mass (g)", y = "Larval developmental time\n(degree days)") +
+  labs(color = NULL, x = "Intermediate host mass (g)", y = "Larval dev. time\n(days at 20°C)") +
   facet_wrap(~parasite_phylum) +
   theme(panel.grid.minor = element_blank())
 fc <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_rg_dh == "yes", "zz", parasite_phylum)),
              aes(x = exp(int_host_mass), y = exp(rg_def_host), color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes IH"),
               aes(fill = factor(endo_def),
@@ -2167,19 +2170,20 @@ fc <- ggplot(two_hosts%>%
   theme(panel.grid.minor = element_blank())
 fd <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_dd_dh == "yes", "zz", parasite_phylum)),
-             aes(x = exp(int_host_mass), y = exp(dd_def_host), color = factor(endo_def))) +
+             aes(x = exp(int_host_mass), y = exp(dd_def_host)/15, color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes IH"),
               aes(fill = factor(endo_def),
                   x = exp(int_host_mass_c + mean(two_hosts$int_host_mass)),
-                  ymin = exp(dd_def_pred.lwr), ymax = exp(dd_def_pred.upr)),
+                  ymin = exp(dd_def_pred.lwr)/15, ymax = exp(dd_def_pred.upr)/15),
               color = NA,
               alpha = 0.2) +
   geom_line(data = filter(p, pred == "yes IH"),
             aes(color = factor(endo_def),
                 x = exp(int_host_mass_c + mean(two_hosts$int_host_mass)),
-                y = exp(dd_def_pred.fit)),
+                y = exp(dd_def_pred.fit)/15),
             linetype = "dashed") +
   guides(color = F, fill = F, shape = F) +
   scale_color_brewer(palette = "Set1", direction = -1, labels = c("Ecto next host", "Endo next host")) +
@@ -2187,13 +2191,14 @@ fd <- ggplot(two_hosts%>%
   scale_y_log10() +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   scale_shape_manual(values = c(16,17,15,4)) +
-  labs(color = NULL, x = "Intermediate host mass (g)", y = "Adult developmental time\n(degree days)") +
+  labs(color = NULL, x = "Intermediate host mass (g)", y = "Adult dev. time\n(days at 20°C)") +
   facet_wrap(~parasite_phylum) +
   theme(panel.grid.minor = element_blank())
 fe <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_fs == "yes", "zz", parasite_phylum)),
              aes(x = exp(int_host_mass), y = exp(fs_def_host), color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes IH"),
               aes(fill = factor(endo_def),
@@ -2217,19 +2222,20 @@ fe <- ggplot(two_hosts%>%
   theme(panel.grid.minor = element_blank())
 ff <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_ag == "yes", "zz", parasite_phylum)),
-             aes(x = exp(int_host_mass), y = exp(ag_def_host), color = factor(endo_def))) +
+             aes(x = exp(int_host_mass), y = exp(ag_def_host)/15, color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes IH"),
               aes(fill = factor(endo_def),
                   x = exp(int_host_mass_c + mean(two_hosts$int_host_mass)),
-                  ymin = exp(ag_def_pred.lwr), ymax = exp(ag_def_pred.upr)),
+                  ymin = exp(ag_def_pred.lwr)/15, ymax = exp(ag_def_pred.upr)/15),
               color = NA,
               alpha = 0.2) +
   geom_line(data = filter(p, pred == "yes IH"),
             aes(color = factor(endo_def),
                 x = exp(int_host_mass_c + mean(two_hosts$int_host_mass)),
-                y = exp(ag_def_pred.fit)),
+                y = exp(ag_def_pred.fit)/15),
             linetype = "dashed") +
   guides(color = F, fill = F, shape = F) +
   scale_color_brewer(palette = "Set1", direction = -1, labels = c("Ecto next host", "Endo next host")) +
@@ -2237,7 +2243,7 @@ ff <- ggplot(two_hosts%>%
   scale_y_log10() +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   scale_shape_manual(values = c(16,17,15,4)) +
-  labs(color = NULL, x = "Intermediate host mass (g)", y = "Age at maturity\n(degree days)") +
+  labs(color = NULL, x = "Intermediate host mass (g)", y = "Age at maturity\n(days at 20°C)") +
   facet_wrap(~parasite_phylum) +
   theme(panel.grid.minor = element_blank())
 ```
@@ -2267,11 +2273,11 @@ f3 <- cowplot::plot_grid(fa + theme(axis.text.x = element_blank(),
                    ff + theme(strip.background = element_blank(),
                               strip.text.x = element_blank(),
                               plot.margin = unit(c(0,5.5,0,5.5), "points")),
-                   labels = c("(a)", "(b)", "(c)", "(d)", "(e)", "(f)"), 
+                   labels = c("A", "B", "C", "D", "E", "F"), 
                    align = "hv", nrow = 3)
 f3
-ggsave(f3, filename = "../../figs/fig3_imp.png", width = 9, height = 8)
-ggsave(f3, filename = "../../figs/fig3_imp.svg", width = 9, height = 8)
+# ggsave(f3, filename = "../../figs/fig3_imp.png", width = 9, height = 6)
+ggsave(f3, filename = "../../figs/fig3_imp.svg", width = 9, height = 6)
 ```
 
 
@@ -2282,6 +2288,7 @@ fa <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_rg_ih == "yes", "zz", parasite_phylum)),
              aes(x = exp(def_host_mass), y = exp(rg_int_host), color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes DH"),
               aes(fill = factor(endo_def),
@@ -2305,19 +2312,20 @@ fa <- ggplot(two_hosts%>%
   theme(panel.grid.minor = element_blank())
 fb <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_dd_ih == "yes", "zz", parasite_phylum)),
-             aes(x = exp(def_host_mass), y = exp(dd_int_host), color = factor(endo_def))) +
+             aes(x = exp(def_host_mass), y = exp(dd_int_host)/15, color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes DH"),
               aes(fill = factor(endo_def),
                   x = exp(def_host_mass_c + mean(two_hosts$def_host_mass)),
-                  ymin = exp(dd_int_pred.lwr), ymax = exp(dd_int_pred.upr)),
+                  ymin = exp(dd_int_pred.lwr)/15, ymax = exp(dd_int_pred.upr)/15),
               color = NA,
               alpha = 0.2) +
   geom_line(data = filter(p, pred == "yes DH"),
             aes(color = factor(endo_def),
                 x = exp(def_host_mass_c + mean(two_hosts$def_host_mass)),
-                y = exp(dd_int_pred.fit)),
+                y = exp(dd_int_pred.fit)/15),
             linetype = "dashed") +
   guides(color = F, fill = F, shape = F) +
   scale_color_brewer(palette = "Set1", direction = -1, labels = c("Ecto next host", "Endo next host")) +
@@ -2325,13 +2333,14 @@ fb <- ggplot(two_hosts%>%
   scale_y_log10() +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   scale_shape_manual(values = c(16,17,15,4)) +
-  labs(color = NULL, x = "Definitive host mass (g)", y = "Larval developmental time\n(degree days)") +
+  labs(color = NULL, x = "Definitive host mass (g)", y = "Larval dev. time\n(days at 20°C)") +
   facet_wrap(~parasite_phylum) +
   theme(panel.grid.minor = element_blank())
 fc <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_rg_dh == "yes", "zz", parasite_phylum)),
              aes(x = exp(def_host_mass), y = exp(rg_def_host), color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes DH"),
               aes(fill = factor(endo_def),
@@ -2355,19 +2364,20 @@ fc <- ggplot(two_hosts%>%
   theme(panel.grid.minor = element_blank())
 fd <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_dd_dh == "yes", "zz", parasite_phylum)),
-             aes(x = exp(def_host_mass), y = exp(dd_def_host), color = factor(endo_def))) +
+             aes(x = exp(def_host_mass), y = exp(dd_def_host)/15, color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes DH"),
               aes(fill = factor(endo_def),
                   x = exp(def_host_mass_c + mean(two_hosts$def_host_mass)),
-                  ymin = exp(dd_def_pred.lwr), ymax = exp(dd_def_pred.upr)),
+                  ymin = exp(dd_def_pred.lwr)/15, ymax = exp(dd_def_pred.upr)/15),
               color = NA,
               alpha = 0.2) +
   geom_line(data = filter(p, pred == "yes DH"),
             aes(color = factor(endo_def),
                 x = exp(def_host_mass_c + mean(two_hosts$def_host_mass)),
-                y = exp(dd_def_pred.fit)),
+                y = exp(dd_def_pred.fit)/15),
             linetype = "dashed") +
   guides(color = F, fill = F, shape = F) +
   scale_color_brewer(palette = "Set1", direction = -1, labels = c("Ecto next host", "Endo next host")) +
@@ -2375,13 +2385,14 @@ fd <- ggplot(two_hosts%>%
   scale_y_log10() +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   scale_shape_manual(values = c(16,17,15,4)) +
-  labs(color = NULL, x = "Definitive host mass (g)", y = "Adult developmental time\n(degree days)") +
+  labs(color = NULL, x = "Definitive host mass (g)", y = "Adult dev. time\n(days at 20°C)") +
   facet_wrap(~parasite_phylum) +
   theme(panel.grid.minor = element_blank())
 fe <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_fs == "yes", "zz", parasite_phylum)),
              aes(x = exp(def_host_mass), y = exp(fs_def_host), color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes DH"),
               aes(fill = factor(endo_def),
@@ -2405,19 +2416,20 @@ fe <- ggplot(two_hosts%>%
   theme(panel.grid.minor = element_blank())
 ff <- ggplot(two_hosts%>%
                mutate(parasite_phylum_m = if_else(missing_ag == "yes", "zz", parasite_phylum)),
-             aes(x = exp(def_host_mass), y = exp(ag_def_host), color = factor(endo_def))) +
+             aes(x = exp(def_host_mass), y = exp(ag_def_host)/15, color = factor(endo_def))) +
   geom_point(aes(shape = parasite_phylum_m),
+             size = 0.5, 
              alpha = 0.4) +
   geom_ribbon(data = filter(p, pred == "yes DH"),
               aes(fill = factor(endo_def),
                   x = exp(def_host_mass_c + mean(two_hosts$def_host_mass)),
-                  ymin = exp(ag_def_pred.lwr), ymax = exp(ag_def_pred.upr)),
+                  ymin = exp(ag_def_pred.lwr)/15, ymax = exp(ag_def_pred.upr)/15),
               color = NA,
               alpha = 0.2) +
   geom_line(data = filter(p, pred == "yes DH"),
             aes(color = factor(endo_def),
                 x = exp(def_host_mass_c + mean(two_hosts$def_host_mass)),
-                y = exp(ag_def_pred.fit)),
+                y = exp(ag_def_pred.fit)/15),
             linetype = "dashed") +
   guides(color = F, fill = F, shape = F) +
   scale_color_brewer(palette = "Set1", direction = -1, labels = c("Ecto next host", "Endo next host")) +
@@ -2425,7 +2437,7 @@ ff <- ggplot(two_hosts%>%
   scale_y_log10() +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   scale_shape_manual(values = c(16,17,15,4)) +
-  labs(color = NULL, x = "Definitive host mass (g)", y = "Age at maturity\n(degree days)") +
+  labs(color = NULL, x = "Definitive host mass (g)", y = "Age at maturity\n(days at 20°C)") +
   facet_wrap(~parasite_phylum) +
   theme(panel.grid.minor = element_blank())
 ```
@@ -2455,11 +2467,11 @@ f4 <- cowplot::plot_grid(fa + theme(axis.text.x = element_blank(),
                    ff + theme(strip.background = element_blank(),
                               plot.margin = unit(c(0,5.5,0,5.5), "points"),
                               strip.text.x = element_blank()),
-                   labels = c("(a)", "(b)", "(c)", "(d)", "(e)", "(f)"), 
+                   labels = c("A", "B", "C", "D", "E", "F"), 
                    align = "hv", nrow = 3)
 f4
-ggsave(f4, filename = "../../figs/fig4_imp.png", width = 9, height = 8)
-ggsave(f4, filename = "../../figs/fig4_imp.svg", width = 9, height = 8)
+# ggsave(f4, filename = "../../figs/fig4_imp.png", width = 9, height = 6)
+ggsave(f4, filename = "../../figs/fig4_imp.svg", width = 9, height = 6)
 ```
 
 Look at growth rates as function of host traits.
@@ -5521,7 +5533,7 @@ raw_cov_plot <- function(trait1, trait2, label1, label2, corner){
     geom_hline(yintercept = exp(posterior.mode(mod_comb_sol1[,paste0("trait",trait2)])),
                linetype = "dotted") +
     geom_point(aes(shape = parasite_phylum_m),
-               alpha = 0.2, size = 1) +
+               alpha = 0.2, size = 0.25) +
     geom_smooth(method=lm, se = F, color = "black") +
     scale_y_log10() +
     scale_x_log10() +
@@ -5553,9 +5565,12 @@ Let's look at the correlations using conditional residuals, starting within stag
 f5n <- cowplot::plot_grid(raw_cov_plot("dd_int_host", "rg_int_host", 
                                 "Larval development", "Larval growth",
                                 corner = c(0,1)) + 
-                     scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))),
-                   cor_pointrange_plot("dd_int_host", "rg_int_host"),
-                   align = "hv", nrow=1)
+                     scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+                       theme(axis.text = element_text(size = 7)),
+                   cor_pointrange_plot("dd_int_host", "rg_int_host") +
+                     theme(axis.text.y = element_text(size = 7),
+                           axis.text.x = element_text(size = 9, angle = 45, hjust = 1, vjust = 1)),
+                   align = "h", nrow=1)
 f5n
 ```
 
@@ -5565,15 +5580,18 @@ Here's the same plot, but for adult growth and development. In this case, correc
 f5m <- cowplot::plot_grid(raw_cov_plot("dd_def_host", "rg_def_host", 
                                 "Adult development", "Adult growth",
                                 corner = c(1,0)) + 
-                     scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))),
-                   cor_pointrange_plot("dd_def_host", "rg_def_host"),
+                     scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+                       theme(axis.text = element_text(size = 7)),
+                   cor_pointrange_plot("dd_def_host", "rg_def_host") +
+                     theme(axis.text.y = element_text(size = 7),
+                           axis.text.x = element_text(size = 9, angle = 45, hjust = 1, vjust = 1)),
                    align = "hv", nrow=1)
 f5m
 ```
 
 ```{r}
-f5test <- cowplot::plot_grid(f5n, f5m, labels = c("(a)","(b)"), nrow = 1)
-ggsave(f5test, filename = "../../figs/fig5_imp.png", width = 8, height = 2)
+f5test <- cowplot::plot_grid(f5n, f5m, labels = c("A","B"), nrow = 1)
+# ggsave(f5test, filename = "../../figs/fig5_imp.png", width = 8, height = 2)
 ggsave(f5test, filename = "../../figs/fig5_imp.svg", width = 8, height = 2)
 ```
 
@@ -6193,41 +6211,54 @@ tax_cov_plot("dd_int_host", "ag_def_host", "Residual larval development", "Resid
 ```{r}
 f6 <- cowplot::plot_grid(f6a_1 + theme(axis.title.x = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")), 
                          f6a_2 + theme(axis.title = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6d_1 + theme(axis.title.x = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6d_2 + theme(axis.title = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6b_1 + theme(axis.title.x = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6b_2 + theme(axis.title = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6e_1 + theme(axis.title.x = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6e_2 + theme(axis.title = element_blank(),
                                        axis.text.x = element_blank(),
+                                       axis.text.y = element_text(size = 7),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
-                         f6c_1 + theme(plot.margin = unit(c(0, 0, 0, 0), "points")),
+                         f6c_1 + theme(axis.text = element_text(size = 7),
+                                       plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6c_2 + theme(axis.title.y = element_blank(),
+                                       axis.text.y = element_text(size = 7),
+                                       axis.text.x = element_text(size = 9, angle = 45, hjust = 1, vjust = 1),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
-                         f6f_1 + theme(plot.margin = unit(c(0, 0, 0, 0), "points")),
+                         f6f_1 + theme(axis.text = element_text(size = 7),
+                                       plot.margin = unit(c(0, 0, 0, 0), "points")),
                          f6f_2 + theme(axis.title.y = element_blank(),
+                                       axis.text.y = element_text(size = 7),
+                                       axis.text.x = element_text(size = 9, angle = 45, hjust = 1, vjust = 1),
                                        plot.margin = unit(c(0, 0, 0, 0), "points")),
                          align = "hv", 
-                         labels = c("(a)", "", "(b)", "", "(c)", "", "(d)", "", "(e)", "", "(f)", ""),
+                         labels = c("A", "", "B", "", "C", "", "D", "", "E", "", "F", ""),
                          nrow = 3)
-ggsave(f6, filename = "../../figs/fig6_imp.png", width = 8, height = 6)
+# ggsave(f6, filename = "../../figs/fig6_imp.png", width = 8, height = 6)
 ggsave(f6, filename = "../../figs/fig6_imp.svg", width = 8, height = 6)
 ```
-
 
 #### Growth rates in the two hosts
 
